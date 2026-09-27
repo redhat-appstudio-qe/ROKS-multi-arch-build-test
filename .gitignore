@@ -1,0 +1,11 @@
+# Local credentials.
+.konflux-test.env
+
+# Local run evidence.
+.konflux-test-runs/
+
+# Local build artifacts.
+/bin/
+
+# Local Python environment.
+/venv/
