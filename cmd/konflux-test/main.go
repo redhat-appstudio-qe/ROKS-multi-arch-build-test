@@ -9,6 +9,7 @@ import (
 
 	"github.com/redhat-appstudio/konflux-test/internal/cli"
 	"github.com/redhat-appstudio/konflux-test/internal/config"
+	"github.com/redhat-appstudio/konflux-test/internal/setup"
 )
 
 func main() {
@@ -19,7 +20,11 @@ func main() {
 }
 
 func run(args []string) error {
-	req, err := config.Parse(args)
+	preparedArgs, err := setup.Prepare(args)
+	if err != nil {
+		return err
+	}
+	req, err := config.Parse(preparedArgs)
 	if err != nil {
 		return err
 	}

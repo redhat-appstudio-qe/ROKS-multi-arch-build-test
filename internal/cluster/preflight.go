@@ -4,23 +4,17 @@ import (
 	"context"
 	"fmt"
 	"strings"
-
-	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 type PreflightSpec struct {
-	ExpectedServer       string
-	AccessChecks         []AccessCheck
-	ArchiveGVR           schema.GroupVersionResource
-	RequireAMD64Capacity bool
-	RequireARM64Capacity bool
-	ArchitectureReady    map[string]bool
+	ExpectedServer string
+	AccessChecks   []AccessCheck
+	Scheduling     SchedulingSpec
 }
 
 type PreflightResult struct {
-	Checks       []CheckResult   `json:"checks"`
-	Archive      ArchiveEndpoint `json:"archive"`
-	Architecture map[string]bool `json:"architecture"`
+	Checks     []CheckResult `json:"checks"`
+	Scheduling []CheckResult `json:"scheduling"`
 }
 
 func RunPreflight(ctx context.Context, cluster Cluster, spec PreflightSpec) (PreflightResult, error) {
@@ -37,27 +31,20 @@ func RunPreflight(ctx context.Context, cluster Cluster, spec PreflightSpec) (Pre
 	if strings.TrimRight(actual, "/") != strings.TrimRight(spec.ExpectedServer, "/") {
 		return PreflightResult{}, fmt.Errorf("cluster server mismatch: expected %q, got %q", spec.ExpectedServer, actual)
 	}
-	result := PreflightResult{Architecture: map[string]bool{}}
+	result := PreflightResult{}
 	result.Checks = cluster.CheckAccess(ctx, spec.AccessChecks)
 	for _, check := range result.Checks {
 		if !check.Passed {
 			return result, fmt.Errorf("preflight check %q failed: %s", check.Name, check.Details)
 		}
 	}
-	if spec.ArchiveGVR.Resource != "" {
-		result.Archive, err = cluster.DiscoverArchive(ctx, spec.ArchiveGVR)
-		if err != nil {
-			return result, fmt.Errorf("discover archive: %w", err)
+	if len(spec.Scheduling.Platforms) > 0 {
+		result.Scheduling = cluster.CheckScheduling(ctx, spec.Scheduling)
+		for _, check := range result.Scheduling {
+			if !check.Passed {
+				return result, fmt.Errorf("scheduling check %q failed: %s", check.Name, check.Details)
+			}
 		}
-	}
-	for architecture, ready := range spec.ArchitectureReady {
-		result.Architecture[architecture] = ready
-	}
-	if spec.RequireAMD64Capacity && !result.Architecture["amd64"] {
-		return result, fmt.Errorf("amd64 capacity cannot be proven")
-	}
-	if spec.RequireARM64Capacity && !result.Architecture["arm64"] {
-		return result, fmt.Errorf("arm64 capacity cannot be proven")
 	}
 	return result, nil
 }

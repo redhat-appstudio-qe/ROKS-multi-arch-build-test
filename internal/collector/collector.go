@@ -12,14 +12,26 @@ import (
 	"github.com/redhat-appstudio/konflux-test/internal/model"
 )
 
+var requiredArtifactNames = []string{
+	"session/manifest.json",
+	"workload/applications.json",
+	"workload/components.json",
+	"workload/pipelineruns.json",
+	"workload/taskruns.json",
+	"workload/pods.json",
+	"collection-report.json",
+}
+
 type Source struct {
 	Name     string
+	Path     string
 	Optional bool
 	Collect  func(context.Context, string) error
 }
 
 type Attempt struct {
 	Name      string    `json:"name"`
+	Path      string    `json:"path,omitempty"`
 	Status    string    `json:"status"`
 	Error     string    `json:"error,omitempty"`
 	StartedAt time.Time `json:"startedAt"`
@@ -38,6 +50,10 @@ type Collector struct {
 	Now      func() time.Time
 }
 
+func RequiredArtifactNames() []string {
+	return append([]string(nil), requiredArtifactNames...)
+}
+
 func (c Collector) Collect(ctx context.Context, runID string, manifest model.RunManifest, sources []Source) (Report, error) {
 	if c.StateDir == "" || runID == "" {
 		return Report{}, fmt.Errorf("state directory and run ID are required")
@@ -47,17 +63,15 @@ func (c Collector) Collect(ctx context.Context, runID string, manifest model.Run
 		now = c.Now
 	}
 	root := filepath.Join(c.StateDir, runID)
-	for _, dir := range []string{"session", "controllers", "workload", "external", "archive"} {
-		if err := os.MkdirAll(filepath.Join(root, dir), 0o750); err != nil {
-			return Report{}, fmt.Errorf("create collection directory: %w", err)
-		}
+	if err := os.MkdirAll(filepath.Join(root, "workload"), 0o750); err != nil {
+		return Report{}, fmt.Errorf("create collection directory: %w", err)
 	}
 	if err := writeJSON(filepath.Join(root, "session", "manifest.json"), manifest); err != nil {
 		return Report{}, err
 	}
-	report := Report{RunID: runID, StartedAt: now().UTC()}
+	report := Report{RunID: runID, StartedAt: now().UTC(), Attempts: []Attempt{{Name: "manifest", Path: "session/manifest.json", Status: "success", StartedAt: now().UTC(), EndedAt: now().UTC()}}}
 	for _, source := range sources {
-		attempt := Attempt{Name: source.Name, StartedAt: now().UTC()}
+		attempt := Attempt{Name: source.Name, Path: source.Path, StartedAt: now().UTC()}
 		if source.Collect == nil {
 			attempt.Status = "omitted"
 		} else if err := source.Collect(ctx, root); err != nil {
@@ -70,10 +84,58 @@ func (c Collector) Collect(ctx context.Context, runID string, manifest model.Run
 		report.Attempts = append(report.Attempts, attempt)
 	}
 	report.EndedAt = now().UTC()
+	report.Attempts = append(report.Attempts, Attempt{Name: "collection-report", Path: "collection-report.json", Status: "success", StartedAt: report.EndedAt, EndedAt: report.EndedAt})
 	if err := writeJSON(filepath.Join(root, "collection-report.json"), report); err != nil {
 		return Report{}, err
 	}
 	return report, nil
+}
+
+func (c Collector) CollectAndVerify(ctx context.Context, runID string, manifest model.RunManifest, sources []Source) (model.FailureArtifactReport, error) {
+	report, err := c.Collect(ctx, runID, manifest, sources)
+	root := filepath.Join(c.StateDir, runID)
+	artifactReport := model.FailureArtifactReport{ArtifactPath: root, RequiredArtifactNames: RequiredArtifactNames()}
+	if err != nil {
+		artifactReport.CollectionErrors = append(artifactReport.CollectionErrors, err.Error())
+		return artifactReport, err
+	}
+	storedReport, err := ReadReport(filepath.Join(root, "collection-report.json"))
+	if err != nil {
+		artifactReport.CollectionErrors = append(artifactReport.CollectionErrors, "collection-report.json: "+err.Error())
+		return artifactReport, fmt.Errorf("read collection report: %w", err)
+	}
+	report = storedReport
+	for _, attempt := range report.Attempts {
+		if attempt.Status == "error" {
+			artifactReport.CollectionErrors = append(artifactReport.CollectionErrors, attempt.Name+": "+attempt.Error)
+		}
+	}
+	for _, name := range artifactReport.RequiredArtifactNames {
+		path := filepath.Join(root, name)
+		if _, readErr := os.ReadFile(path); readErr != nil {
+			artifactReport.CollectionErrors = append(artifactReport.CollectionErrors, name+": "+readErr.Error())
+			continue
+		}
+		if name != "session/manifest.json" && !successfulAttempt(report, name) {
+			artifactReport.CollectionErrors = append(artifactReport.CollectionErrors, name+": collection was not successful")
+			continue
+		}
+		artifactReport.SavedArtifactNames = append(artifactReport.SavedArtifactNames, name)
+	}
+	if len(artifactReport.CollectionErrors) > 0 {
+		return artifactReport, fmt.Errorf("failure artifacts incomplete under %s: %v", root, artifactReport.CollectionErrors)
+	}
+	artifactReport.VerifiedAt = time.Now().UTC()
+	return artifactReport, nil
+}
+
+func successfulAttempt(report Report, path string) bool {
+	for _, attempt := range report.Attempts {
+		if attempt.Path == path && attempt.Status == "success" {
+			return true
+		}
+	}
+	return false
 }
 
 func writeJSON(path string, value any) error {

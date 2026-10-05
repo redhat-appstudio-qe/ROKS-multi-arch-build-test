@@ -1,41 +1,66 @@
 # Local Konflux Build Validation
 
-`konflux-test` is a local operator harness for validating an existing Konflux
-cluster. It does not provision Konflux, install release infrastructure, delete
-provider forks or registry images, or strip finalizers.
+`konflux-test` validates multi-architecture build creation on `kflux-lw-p01`.
+It reuses fixed repositories, appends one harmless comment to each of their
+three Dockerfiles, waits for matching successful PipelineRuns, verifies
+pre-publication `linux/amd64` and `linux/arm64` build outputs, then stops.
+
+Fixed fixtures:
+
+- GitHub: `https://github.com/redhat-appstudio-qe/dr_test_mathwizz`
+- GitLab: `https://gitlab.com/konflux-qe/dr_test_mathwizz_gl`
+
+The harness never copies, creates, forks, renames, or deletes repositories. It
+does not query registries, archives, pruning, backup services, or unrelated
+resources.
 
 ## Prerequisites
 
-- An existing kubeconfig context and an explicit expected API server URL.
-- Read access to the Konflux APIs, KubeArchive, controller logs, and registry
-  metadata; write access only for the persistent test fixture and harmless
-  Dockerfile trigger commits.
-- `GITHUB_TOKEN` and `MY_GITHUB_ORG` for GitHub, or `GITLAB_BOT_TOKEN`,
-  `GITLAB_API_URL`, and `GITLAB_GROUP_ID` for GitLab. Store them in the ignored
-  `.konflux-test.env` file when running from `konflux-test/`.
-- Both linux/amd64 and linux/arm64 build capacity.
+- An existing kubeconfig context for `kflux-lw-p01`.
+- An explicit expected API server. The setup helper verifies it with
+  `oc whoami --show-server`.
+- A ready `multi-platform-controller` deployment and `host-config` entries for
+  `linux/amd64` and `linux/arm64`. Dynamic arm64 provisioning is sufficient;
+  physical arm64 nodes are not required.
+- PaC onboarding must be complete for all three components, with current
+  `.tekton` configuration available on the fixture's default branch. The
+  harness waits for PaC readiness before writing trigger comments and does not
+  merge onboarding changes.
+- `GITHUB_TOKEN` for GitHub runs, or `GITLAB_BOT_TOKEN` and optional
+  `GITLAB_API_URL` for GitLab runs.
 
-The GitLab fixture is `https://gitlab.com/konflux-qe/dr_test_mathwizz_gl`.
-The default GitHub fixture source is
-`https://github.com/redhat-appstudio-qe/dr_test_mathwizz`.
-
-The GitHub default tenant namespace is `mathwizz-test-github`. The GitLab
-default tenant namespace is `mathwizz-test-gitlab`. Existing fixture drift fails
-closed; the harness does not silently rewrite it. Runtime state is written
-under `.konflux-test-runs/<run-id>/` and credentials are redacted before
-evidence is written.
+Copy `.konflux-test.env.example` to `.konflux-test.env`. Keep the copy local.
 
 ## Commands
 
 ```bash
 cd konflux-test
-oc whoami --show-server
-go run ./cmd/konflux-test run github --cluster-server "$KONFLUX_CLUSTER_SERVER" --env-file .konflux-test.env
-go run ./cmd/konflux-test run gitlab --cluster-server "$KONFLUX_CLUSTER_SERVER" --env-file .konflux-test.env
-go run ./cmd/konflux-test collect-logs <run-id> --cluster-server "$KONFLUX_CLUSTER_SERVER"
-go run ./cmd/konflux-test cleanup <run-id> --cluster-server "$KONFLUX_CLUSTER_SERVER"
+./bin/konflux-test run github --env-file .konflux-test.env
+./bin/konflux-test run gitlab --env-file .konflux-test.env
 ```
 
-The only trigger-side external mutation is the timestamped Dockerfile comment
-commit in the persistent provider fork. Failed runs remain available for
-`collect-logs`; cleanup is explicit and ownership-checked.
+Each run creates one tenant namespace labeled with
+`app.konflux-ci.org/managed-by=konflux-test` and
+`app.konflux.org/run-id=<run-id>`.
+
+If the configured namespace already exists, an owned stale namespace requires
+approval before deletion. An unowned namespace stops the run. A resumed run
+may reuse only a namespace with both exact labels and the resumed run ID.
+
+After success, the harness prompts before deleting the current owned tenant
+namespace. A declined prompt retains the namespace and successful result.
+After failure, it saves and verifies these artifacts before prompting:
+
+```text
+session/manifest.json
+workload/applications.json
+workload/components.json
+workload/pipelineruns.json
+workload/taskruns.json
+workload/pods.json
+collection-report.json
+```
+
+Incomplete artifact collection suppresses cleanup prompting and retains the
+namespace. Runtime state is stored under `.konflux-test-runs/<run-id>/` with
+redaction applied before evidence is written.

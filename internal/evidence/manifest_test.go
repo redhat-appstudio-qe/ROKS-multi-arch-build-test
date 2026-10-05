@@ -39,7 +39,7 @@ func TestManifestStorePersistsPhasesAndLatest(t *testing.T) {
 
 func TestManifestStoreWritesIdentityAndRedactsCredentials(t *testing.T) {
 	store := NewManifestStore(t.TempDir())
-	manifest := model.RunManifest{RunID: "run-2", Phase: model.PhasePreflight, PipelineRuns: []model.PipelineRunIdentity{{Namespace: "tenant", Name: "build", UID: types.UID("uid-1"), StartedAt: time.Now().UTC()}}, Archive: []model.ArchiveEvidence{{RawResponse: map[string]any{"token": "do-not-write", "status": "Succeeded"}}}}
+	manifest := model.RunManifest{RunID: "run-2", Phase: model.PhasePreflight, PipelineRuns: []model.PipelineRunIdentity{{Namespace: "tenant", Name: "build", UID: types.UID("uid-1"), StartedAt: time.Now().UTC()}}, BuildOutputs: []model.BuildOutputEvidence{{CreatedOutputs: map[string]string{"password": "secret-value"}}}}
 	if err := store.Create(manifest); err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestInvalidPhaseTransitionIsRejected(t *testing.T) {
 	if err := store.Create(manifest); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Transition(&manifest, model.PhaseImagesVerified); err == nil {
+	if err := store.Transition(&manifest, model.PhaseBuildOutputsVerified); err == nil {
 		t.Fatal("expected invalid transition")
 	}
 }

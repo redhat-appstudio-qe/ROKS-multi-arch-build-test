@@ -10,20 +10,18 @@ import (
 type Phase string
 
 const (
-	PhasePreflight       Phase = "preflight"
-	PhaseFixtureReady    Phase = "fixture-ready"
-	PhaseTriggered       Phase = "triggered"
-	PhaseBuildsVerified  Phase = "builds-verified"
-	PhaseImagesVerified  Phase = "images-verified"
-	PhasePruningWait     Phase = "pruning-wait"
-	PhaseArchiveVerified Phase = "archive-verified"
-	PhaseCompleted       Phase = "completed"
-	PhaseFailed          Phase = "failed"
+	PhasePreflight            Phase = "preflight"
+	PhaseFixtureReady         Phase = "fixture-ready"
+	PhaseTriggered            Phase = "triggered"
+	PhaseBuildsVerified       Phase = "builds-verified"
+	PhaseBuildOutputsVerified Phase = "build-outputs-verified"
+	PhaseCompleted            Phase = "completed"
+	PhaseFailed               Phase = "failed"
 )
 
 var phaseOrder = []Phase{
 	PhasePreflight, PhaseFixtureReady, PhaseTriggered, PhaseBuildsVerified,
-	PhaseImagesVerified, PhasePruningWait, PhaseArchiveVerified, PhaseCompleted,
+	PhaseBuildOutputsVerified, PhaseCompleted,
 }
 
 func IsTerminalPhase(phase Phase) bool {
@@ -58,6 +56,8 @@ type FixtureIdentity struct {
 	TenantNamespace string   `json:"tenantNamespace"`
 	Application     string   `json:"application"`
 	Components      []string `json:"components"`
+	RepositoryOwner string   `json:"repositoryOwner"`
+	RepositoryName  string   `json:"repositoryName"`
 	Repository      string   `json:"repository"`
 	Branch          string   `json:"branch"`
 }
@@ -80,29 +80,12 @@ type TriggerCommit struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-type ImageEvidence struct {
-	Component    string         `json:"component"`
-	Reference    string         `json:"reference"`
-	Digest       string         `json:"digest"`
-	OS           string         `json:"os"`
-	Architecture string         `json:"architecture"`
-	Registry     map[string]any `json:"registry,omitempty"`
-}
-
-type PruningObservation struct {
-	PipelineRun   PipelineRunIdentity `json:"pipelineRun"`
-	ObservedAt    time.Time           `json:"observedAt"`
-	DisappearedAt time.Time           `json:"disappearedAt"`
-	Normal        bool                `json:"normal"`
-	Details       map[string]any      `json:"details,omitempty"`
-}
-
-type ArchiveEvidence struct {
-	Endpoint    string          `json:"endpoint"`
-	QueriedAt   time.Time       `json:"queriedAt"`
-	RawResponse map[string]any  `json:"rawResponse,omitempty"`
-	Matched     bool            `json:"matched"`
-	Comparisons map[string]bool `json:"comparisons"`
+type BuildOutputEvidence struct {
+	Component      string              `json:"component"`
+	PipelineRun    PipelineRunIdentity `json:"pipelineRun"`
+	Platforms      []string            `json:"platforms"`
+	CreatedOutputs map[string]string   `json:"createdOutputs,omitempty"`
+	VerifiedAt     time.Time           `json:"verifiedAt"`
 }
 
 type Failure struct {
@@ -111,26 +94,25 @@ type Failure struct {
 	Message string `json:"message"`
 }
 
-type CollectionReport struct {
-	Path      string    `json:"path"`
-	StartedAt time.Time `json:"startedAt"`
-	EndedAt   time.Time `json:"endedAt"`
+type FailureArtifactReport struct {
+	ArtifactPath          string    `json:"artifactPath"`
+	RequiredArtifactNames []string  `json:"requiredArtifactNames"`
+	SavedArtifactNames    []string  `json:"savedArtifactNames"`
+	CollectionErrors      []string  `json:"collectionErrors,omitempty"`
+	VerifiedAt            time.Time `json:"verifiedAt"`
 }
 
 type RunManifest struct {
-	RunID                string                `json:"runID"`
-	Provider             string                `json:"provider"`
-	TargetClusterServer  string                `json:"targetClusterServer"`
-	CreatedAt            time.Time             `json:"createdAt"`
-	UpdatedAt            time.Time             `json:"updatedAt"`
-	Phase                Phase                 `json:"phase"`
-	Fixture              FixtureIdentity       `json:"fixture"`
-	BaselinePipelineRuns []PipelineRunIdentity `json:"baselinePipelineRuns,omitempty"`
-	TriggerCommits       []TriggerCommit       `json:"triggerCommits,omitempty"`
-	PipelineRuns         []PipelineRunIdentity `json:"pipelineRuns,omitempty"`
-	Images               []ImageEvidence       `json:"images,omitempty"`
-	Pruning              []PruningObservation  `json:"pruning,omitempty"`
-	Archive              []ArchiveEvidence     `json:"archive,omitempty"`
-	Failure              *Failure              `json:"failure,omitempty"`
-	Collection           *CollectionReport     `json:"collection,omitempty"`
+	RunID               string                 `json:"runID"`
+	Provider            string                 `json:"provider"`
+	TargetClusterServer string                 `json:"targetClusterServer"`
+	CreatedAt           time.Time              `json:"createdAt"`
+	UpdatedAt           time.Time              `json:"updatedAt"`
+	Phase               Phase                  `json:"phase"`
+	Fixture             FixtureIdentity        `json:"fixture"`
+	TriggerCommits      []TriggerCommit        `json:"triggerCommits,omitempty"`
+	PipelineRuns        []PipelineRunIdentity  `json:"pipelineRuns,omitempty"`
+	BuildOutputs        []BuildOutputEvidence  `json:"buildOutputs,omitempty"`
+	Failure             *Failure               `json:"failure,omitempty"`
+	FailureArtifacts    *FailureArtifactReport `json:"failureArtifacts,omitempty"`
 }

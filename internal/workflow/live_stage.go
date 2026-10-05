@@ -7,8 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/go-containerregistry/pkg/name"
-	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/redhat-appstudio/konflux-test/internal/cleanup"
 	"github.com/redhat-appstudio/konflux-test/internal/cluster"
 	"github.com/redhat-appstudio/konflux-test/internal/config"
 	"github.com/redhat-appstudio/konflux-test/internal/model"
@@ -27,7 +26,8 @@ type LiveStage struct {
 	Provider    providers.Provider
 	Source      providers.SourceRepository
 	Fixture     providers.FixtureRepository
-	Archive     cluster.ArchiveEndpoint
+	Prompt      Confirmation
+	Namespace   cleanup.NamespaceService
 }
 
 func NewLiveStage(request config.Request, clients *cluster.ClientSet, provider providers.Provider) (*LiveStage, error) {
@@ -38,33 +38,40 @@ func NewLiveStage(request config.Request, clients *cluster.ClientSet, provider p
 	if clients == nil || provider == nil {
 		return nil, fmt.Errorf("cluster clients and provider are required")
 	}
-	return &LiveStage{Request: request, Clients: clients, RealCluster: &cluster.RealCluster{Clients: clients}, Provider: provider, Source: source}, nil
+	stage := &LiveStage{Request: request, Clients: clients, RealCluster: &cluster.RealCluster{Clients: clients}, Provider: provider, Source: source, Fixture: providers.FixtureRepository{Owner: source.Owner, Name: source.Name, URL: source.URL}, Namespace: cleanup.NamespaceService{Dynamic: clients.Dynamic}}
+	return stage, nil
 }
 
 func (s *LiveStage) Preflight(ctx context.Context, manifest *model.RunManifest) error {
 	spec := cluster.PreflightSpec{ExpectedServer: s.Request.ClusterServer, AccessChecks: []cluster.AccessCheck{
 		{Name: "pipelineruns", Resource: PipelineRunGVR, Namespace: s.Request.TenantNamespace},
+		{Name: "taskruns", Resource: cluster.TaskRunGVR, Namespace: s.Request.TenantNamespace},
 		{Name: "applications", Resource: cluster.ApplicationGVR, Namespace: s.Request.TenantNamespace},
 		{Name: "components", Resource: cluster.ComponentGVR, Namespace: s.Request.TenantNamespace},
+	}, Scheduling: cluster.SchedulingSpec{
+		Namespace:  cluster.MultiPlatformControllerNamespace,
+		Deployment: cluster.MultiPlatformControllerDeployment,
+		ConfigMap:  cluster.MultiPlatformControllerConfigMap,
+		Platforms:  []string{"linux/amd64", "linux/arm64"},
 	}}
-	if s.Request.ArchiveGVR != "" {
-		gvr, err := cluster.ParseGVR(s.Request.ArchiveGVR)
-		if err != nil {
-			return err
-		}
-		spec.ArchiveGVR = gvr
-	}
-	result, err := cluster.RunPreflight(ctx, s.RealCluster, spec)
+	_, err := cluster.RunPreflight(ctx, s.RealCluster, spec)
 	if err != nil {
 		return err
 	}
-	s.Archive = result.Archive
+	if err := s.ensureTenantNamespaceAvailable(ctx, manifest); err != nil {
+		return err
+	}
 	manifest.TargetClusterServer = s.Request.ClusterServer
 	return nil
 }
 
 func (s *LiveStage) EnsureFixture(ctx context.Context, manifest *model.RunManifest) error {
-	fixture, err := s.Provider.EnsureFork(ctx, s.Source, s.Fixture)
+	fixture := s.Fixture
+	if recorded := fixtureFromManifest(manifest.Fixture); recorded.Name != "" {
+		fixture = recorded
+	}
+	var err error
+	fixture, err = s.Provider.ValidateFixture(ctx, fixture)
 	if err != nil {
 		return err
 	}
@@ -74,30 +81,99 @@ func (s *LiveStage) EnsureFixture(ctx context.Context, manifest *model.RunManife
 		{Name: "mathwizz-history-worker", Repository: fixture.URL, Branch: s.Request.SourceBranch, Dockerfile: s.Request.ComponentPaths[1]},
 		{Name: "mathwizz-frontend", Repository: fixture.URL, Branch: s.Request.SourceBranch, Dockerfile: s.Request.ComponentPaths[2]},
 	}
-	result, err := (cluster.FixtureService{Dynamic: s.Clients.Dynamic}).EnsureFixture(ctx, cluster.FixtureSpec{Namespace: s.Request.TenantNamespace, Application: s.Request.ApplicationName, Components: components})
+	namespace := manifest.Fixture.TenantNamespace
+	if namespace == "" {
+		namespace = s.Request.TenantNamespace
+	}
+	application := manifest.Fixture.Application
+	if application == "" {
+		application = s.Request.ApplicationName
+	}
+	result, err := (cluster.FixtureService{Dynamic: s.Clients.Dynamic}).EnsureFixture(ctx, cluster.FixtureSpec{
+		Namespace:   namespace,
+		RunID:       manifest.RunID,
+		Application: application,
+		Provider:    s.Request.Provider,
+		GitLabToken: s.Request.Credentials.GitLabToken,
+		Components:  components,
+	})
 	if err != nil {
 		return err
 	}
-	manifest.Fixture = model.FixtureIdentity{TenantNamespace: result.Namespace, Application: result.Application, Components: result.Components, Repository: fixture.URL, Branch: s.Request.SourceBranch}
+	manifest.Fixture = model.FixtureIdentity{
+		TenantNamespace: result.Namespace,
+		Application:     result.Application,
+		Components:      result.Components,
+		RepositoryOwner: fixture.Owner,
+		RepositoryName:  fixture.Name,
+		Repository:      fixture.URL,
+		Branch:          s.Request.SourceBranch,
+	}
 	return nil
 }
 
-func (s *LiveStage) CaptureBaseline(ctx context.Context, manifest *model.RunManifest) error {
-	list, err := s.Clients.Dynamic.Resource(PipelineRunGVR).Namespace(s.Request.TenantNamespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
+func (s *LiveStage) ensureTenantNamespaceAvailable(ctx context.Context, manifest *model.RunManifest) error {
+	namespace := manifest.Fixture.TenantNamespace
+	if namespace == "" {
+		namespace = s.Request.TenantNamespace
 	}
-	for _, object := range list.Items {
-		manifest.BaselinePipelineRuns = append(manifest.BaselinePipelineRuns, identityFromObject(&object, "", ""))
+	candidates, err := s.Namespace.FindCandidates(ctx, namespace)
+	if err != nil {
+		return fmt.Errorf("discover tenant namespace %s: %w", namespace, err)
+	}
+	for _, info := range candidates {
+		if s.Request.ResumeRunID != "" && info.Name == namespace && info.RunID == manifest.RunID {
+			continue
+		}
+		if s.Prompt == nil {
+			return fmt.Errorf("tenant namespace %s from run %s requires interactive approval before deletion", info.Name, info.RunID)
+		}
+		approved, err := s.Prompt.Confirm(ctx, fmt.Sprintf("Delete owned stale tenant namespace %s from run %s", info.Name, info.RunID))
+		if err != nil {
+			return fmt.Errorf("confirm deletion of tenant namespace %s: %w", info.Name, err)
+		}
+		if !approved {
+			return fmt.Errorf("tenant namespace %s retained; preflight refused to continue", info.Name)
+		}
+		if err := s.Namespace.Delete(ctx, info.Name, info.RunID); err != nil {
+			return err
+		}
+		if err := s.Namespace.WaitDeleted(ctx, info.Name); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
 func (s *LiveStage) TriggerComponents(ctx context.Context, manifest *model.RunManifest) error {
+	if s.Fixture.Name == "" {
+		s.Fixture = fixtureFromManifest(manifest.Fixture)
+	}
+	if s.Fixture.Name == "" {
+		return fmt.Errorf("run manifest does not contain a fixture repository")
+	}
 	paths := s.Request.ComponentPaths
 	components := manifest.Fixture.Components
 	if len(paths) != len(components) {
 		return fmt.Errorf("fixture has %d components but %d Dockerfile paths", len(components), len(paths))
+	}
+	componentNames := make([]string, 0, len(components))
+	for _, component := range components {
+		componentNames = append(componentNames, component)
+	}
+	if err := waitForPaCEnabled(ctx, s.Request.Timeouts.Build, 10*time.Second, componentNames, func(ctx context.Context) ([]unstructured.Unstructured, error) {
+		list, err := s.Clients.Dynamic.Resource(cluster.ComponentGVR).Namespace(manifest.Fixture.TenantNamespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("list components while waiting for PaC: %w", err)
+		}
+		for index := range list.Items {
+			if err := paCStatusError(&list.Items[index]); err != nil {
+				return nil, err
+			}
+		}
+		return list.Items, nil
+	}); err != nil {
+		return fmt.Errorf("wait for PaC onboarding: %w", err)
 	}
 	for index, component := range components {
 		file, err := s.Provider.ReadFile(ctx, s.Fixture, paths[index], s.Request.SourceBranch)
@@ -113,6 +189,14 @@ func (s *LiveStage) TriggerComponents(ctx context.Context, manifest *model.RunMa
 		manifest.TriggerCommits = append(manifest.TriggerCommits, model.TriggerCommit{Component: component, SHA: commit.SHA, URL: commit.URL, CreatedAt: commit.CreatedAt})
 	}
 	return nil
+}
+
+func fixtureFromManifest(identity model.FixtureIdentity) providers.FixtureRepository {
+	return providers.FixtureRepository{
+		Owner: identity.RepositoryOwner,
+		Name:  identity.RepositoryName,
+		URL:   identity.Repository,
+	}
 }
 
 func (s *LiveStage) VerifyBuilds(ctx context.Context, manifest *model.RunManifest) error {
@@ -161,6 +245,54 @@ func paCStatusError(object *unstructured.Unstructured) error {
 		return fmt.Errorf("component %s PaC onboarding failed with error ID %d", object.GetName(), status.PaC.ErrorID)
 	}
 	return fmt.Errorf("component %s PaC onboarding failed: %s", object.GetName(), status.PaC.ErrorMessage)
+}
+
+func waitForPaCEnabled(ctx context.Context, timeout, interval time.Duration, names []string, list func(context.Context) ([]unstructured.Unstructured, error)) error {
+	if timeout <= 0 {
+		return fmt.Errorf("PaC timeout must be positive")
+	}
+	if interval <= 0 {
+		return fmt.Errorf("PaC polling interval must be positive")
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	for {
+		objects, err := list(waitCtx)
+		if err != nil {
+			return err
+		}
+		byName := make(map[string]*unstructured.Unstructured, len(objects))
+		for index := range objects {
+			byName[objects[index].GetName()] = &objects[index]
+		}
+		pending := false
+		for _, name := range names {
+			object, found := byName[name]
+			if !found {
+				pending = true
+				continue
+			}
+			status := object.GetAnnotations()["build.appstudio.openshift.io/status"]
+			var annotation struct {
+				PaC struct {
+					State string `json:"state"`
+				} `json:"pac"`
+			}
+			if err := json.Unmarshal([]byte(status), &annotation); err != nil || annotation.PaC.State != "enabled" {
+				pending = true
+			}
+		}
+		if !pending {
+			return nil
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-waitCtx.Done():
+			timer.Stop()
+			return fmt.Errorf("timed out waiting for PaC onboarding: %w", waitCtx.Err())
+		case <-timer.C:
+		}
+	}
 }
 
 func waitForBuildMatches(ctx context.Context, timeout, interval time.Duration, commits []model.TriggerCommit, list func(context.Context) ([]unstructured.Unstructured, error)) ([]model.PipelineRunIdentity, error) {
@@ -239,61 +371,12 @@ func pipelineRunConditionStatus(object *unstructured.Unstructured) string {
 	return "Unknown"
 }
 
-func (s *LiveStage) VerifyImages(ctx context.Context, manifest *model.RunManifest) error {
-	builds := make([]cluster.BuildImage, 0, len(manifest.PipelineRuns))
-	for _, identity := range manifest.PipelineRuns {
-		object, err := s.Clients.Dynamic.Resource(PipelineRunGVR).Namespace(identity.Namespace).Get(ctx, identity.Name, metav1.GetOptions{})
-		if err != nil {
-			return err
-		}
-		reference, digest := imageResults(object)
-		if reference == "" || digest == "" {
-			return fmt.Errorf("PipelineRun %s/%s has no image reference and digest results", identity.Namespace, identity.Name)
-		}
-		builds = append(builds, cluster.BuildImage{Component: identity.Component, Reference: reference, Digest: digest})
-	}
-	images, err := cluster.ValidateImages(ctx, registryInspector{}, builds)
+func (s *LiveStage) VerifyBuildOutputs(ctx context.Context, manifest *model.RunManifest) error {
+	evidence, err := (cluster.BuildOutputInspector{Dynamic: s.Clients.Dynamic}).Verify(ctx, manifest.PipelineRuns)
 	if err != nil {
 		return err
 	}
-	manifest.Images = append(manifest.Images, images...)
-	return nil
-}
-
-func (s *LiveStage) ObservePruning(ctx context.Context, manifest *model.RunManifest) error {
-	for _, identity := range manifest.PipelineRuns {
-		started := time.Now().UTC()
-		err := cluster.WaitForPruned(ctx, func(ctx context.Context, identity model.PipelineRunIdentity) error {
-			_, err := s.Clients.Dynamic.Resource(PipelineRunGVR).Namespace(identity.Namespace).Get(ctx, identity.Name, metav1.GetOptions{})
-			return err
-		}, identity, s.Request.Timeouts.Pruning, 10*time.Second)
-		if err != nil {
-			return err
-		}
-		manifest.Pruning = append(manifest.Pruning, model.PruningObservation{PipelineRun: identity, ObservedAt: started, DisappearedAt: time.Now().UTC(), Normal: true})
-	}
-	return nil
-}
-
-func (s *LiveStage) VerifyArchive(ctx context.Context, manifest *model.RunManifest) error {
-	if s.Archive.GVR.Resource == "" {
-		return fmt.Errorf("archive endpoint was not discovered")
-	}
-	for _, identity := range manifest.PipelineRuns {
-		raw, err := cluster.QueryArchive(ctx, s.Clients.Dynamic, s.Archive, identity)
-		if err != nil {
-			return err
-		}
-		comparisons, err := cluster.CompareArchiveIdentity(raw, identity)
-		if err != nil {
-			return err
-		}
-		matched := comparisons["namespace"] && comparisons["name"] && comparisons["uid"]
-		manifest.Archive = append(manifest.Archive, model.ArchiveEvidence{Endpoint: s.Archive.APIURL, QueriedAt: time.Now().UTC(), RawResponse: raw, Matched: matched, Comparisons: comparisons})
-		if !matched {
-			return fmt.Errorf("archive identity mismatch for %s/%s", identity.Namespace, identity.Name)
-		}
-	}
+	manifest.BuildOutputs = append(manifest.BuildOutputs, evidence...)
 	return nil
 }
 
@@ -313,64 +396,4 @@ func identityFromObject(object *unstructured.Unstructured, component, sourceSHA 
 		}
 	}
 	return identity
-}
-
-func imageResults(object *unstructured.Unstructured) (string, string) {
-	results, _, _ := unstructured.NestedSlice(object.Object, "status", "results")
-	var reference, digest string
-	for _, item := range results {
-		result, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		name, _ := result["name"].(string)
-		value, _ := result["value"].(string)
-		upper := strings.ToUpper(name)
-		if strings.Contains(upper, "IMAGE") && (strings.Contains(upper, "URL") || strings.Contains(upper, "REFERENCE")) {
-			reference = value
-		}
-		if strings.Contains(upper, "IMAGE") && strings.Contains(upper, "DIGEST") {
-			digest = value
-		}
-	}
-	return reference, digest
-}
-
-type registryInspector struct{}
-
-func (registryInspector) Inspect(ctx context.Context, reference string) ([]cluster.ImagePlatform, error) {
-	parsed, err := name.ParseReference(reference)
-	if err != nil {
-		return nil, err
-	}
-	descriptor, err := remote.Get(parsed, remote.WithContext(ctx))
-	if err != nil {
-		return nil, err
-	}
-	if descriptor.MediaType.IsIndex() {
-		index, err := descriptor.ImageIndex()
-		if err == nil {
-			manifest, err := index.IndexManifest()
-			if err == nil {
-				platforms := make([]cluster.ImagePlatform, 0, len(manifest.Manifests))
-				for _, entry := range manifest.Manifests {
-					if entry.Platform == nil {
-						continue
-					}
-					platforms = append(platforms, cluster.ImagePlatform{OS: entry.Platform.OS, Architecture: entry.Platform.Architecture, Digest: entry.Digest.String()})
-				}
-				return platforms, nil
-			}
-		}
-	}
-	image, err := descriptor.Image()
-	if err != nil {
-		return nil, err
-	}
-	config, err := image.ConfigFile()
-	if err != nil {
-		return nil, err
-	}
-	digest := descriptor.Descriptor.Digest.String()
-	return []cluster.ImagePlatform{{OS: config.OS, Architecture: config.Architecture, Digest: digest}}, nil
 }

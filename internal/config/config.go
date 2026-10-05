@@ -11,8 +11,6 @@ import (
 
 const (
 	CommandRun                   = "run"
-	CommandCollectLogs           = "collect-logs"
-	CommandCleanup               = "cleanup"
 	ProviderGitHub               = "github"
 	ProviderGitLab               = "gitlab"
 	DefaultStateDir              = ".konflux-test-runs"
@@ -30,19 +28,14 @@ var DefaultComponentPaths = []string{
 }
 
 type Credentials struct {
-	GitHubToken   string
-	GitHubOrg     string
-	GitLabToken   string
-	GitLabAPIURL  string
-	GitLabGroupID string
+	GitHubToken  string
+	GitLabToken  string
+	GitLabAPIURL string
 }
 
 type Timeouts struct {
 	Preflight time.Duration
 	Build     time.Duration
-	Pruning   time.Duration
-	Archive   time.Duration
-	Collect   time.Duration
 }
 
 type Request struct {
@@ -56,9 +49,6 @@ type Request struct {
 	ApplicationName  string
 	SourceRepository string
 	SourceBranch     string
-	ArchiveGVR       string
-	ArchiveAPIURL    string
-	Registry         string
 	ComponentPaths   []string
 	Timeouts         Timeouts
 	Credentials      Credentials
@@ -75,16 +65,13 @@ func Defaults() Request {
 		Timeouts: Timeouts{
 			Preflight: 10 * time.Minute,
 			Build:     60 * time.Minute,
-			Pruning:   30 * time.Minute,
-			Archive:   10 * time.Minute,
-			Collect:   10 * time.Minute,
 		},
 	}
 }
 
 func Parse(args []string) (Request, error) {
 	if len(args) == 0 {
-		return Request{}, errors.New("usage: konflux-test <run|collect-logs|cleanup> ...")
+		return Request{}, errors.New("usage: konflux-test run <github|gitlab> ...")
 	}
 	req := Defaults()
 	req.Command = args[0]
@@ -104,12 +91,6 @@ func Parse(args []string) (Request, error) {
 		if req.Provider != ProviderGitHub && req.Provider != ProviderGitLab {
 			return Request{}, fmt.Errorf("unsupported provider %q", req.Provider)
 		}
-	case CommandCollectLogs, CommandCleanup:
-		if len(remaining) == 0 || strings.TrimSpace(remaining[0]) == "" || strings.HasPrefix(remaining[0], "-") {
-			return Request{}, fmt.Errorf("%s requires a run ID", req.Command)
-		}
-		req.RunID = remaining[0]
-		remaining = remaining[1:]
 	default:
 		return Request{}, fmt.Errorf("unsupported command %q", req.Command)
 	}
@@ -124,14 +105,8 @@ func Parse(args []string) (Request, error) {
 	fs.StringVar(&req.SourceBranch, "branch", req.SourceBranch, "source branch")
 	var envFile string
 	fs.StringVar(&envFile, "env-file", "", "dotenv file containing provider credentials")
-	fs.StringVar(&req.ArchiveGVR, "archive-gvr", "", "KubeArchive group/version/resource")
-	fs.StringVar(&req.ArchiveAPIURL, "archive-api-url", "", "KubeArchive API URL")
-	fs.StringVar(&req.Registry, "registry", "", "registry endpoint")
 	fs.DurationVar(&req.Timeouts.Preflight, "preflight-timeout", req.Timeouts.Preflight, "preflight timeout")
 	fs.DurationVar(&req.Timeouts.Build, "build-timeout", req.Timeouts.Build, "build timeout")
-	fs.DurationVar(&req.Timeouts.Pruning, "pruning-timeout", req.Timeouts.Pruning, "pruning timeout")
-	fs.DurationVar(&req.Timeouts.Archive, "archive-timeout", req.Timeouts.Archive, "archive timeout")
-	fs.DurationVar(&req.Timeouts.Collect, "collect-timeout", req.Timeouts.Collect, "collection timeout")
 	fs.StringVar(&req.ResumeRunID, "resume", "", "resume an existing run ID")
 	if err := fs.Parse(remaining); err != nil {
 		return Request{}, err
@@ -156,11 +131,9 @@ func Parse(args []string) (Request, error) {
 
 func credentialsFromEnv(fileValues map[string]string) Credentials {
 	return Credentials{
-		GitHubToken:   envValue("GITHUB_TOKEN", fileValues),
-		GitHubOrg:     envValue("MY_GITHUB_ORG", fileValues),
-		GitLabToken:   envValue("GITLAB_BOT_TOKEN", fileValues),
-		GitLabAPIURL:  envValue("GITLAB_API_URL", fileValues),
-		GitLabGroupID: envValue("GITLAB_GROUP_ID", fileValues),
+		GitHubToken:  envValue("GITHUB_TOKEN", fileValues),
+		GitLabToken:  envValue("GITLAB_BOT_TOKEN", fileValues),
+		GitLabAPIURL: envValue("GITLAB_API_URL", fileValues),
 	}
 }
 
@@ -207,17 +180,21 @@ func (r Request) Validate() error {
 	if r.Command == CommandRun && r.Provider != ProviderGitHub && r.Provider != ProviderGitLab {
 		return fmt.Errorf("unsupported provider %q", r.Provider)
 	}
-	if (r.Command == CommandRun || r.Command == CommandCollectLogs || r.Command == CommandCleanup) && strings.TrimSpace(r.StateDir) == "" {
+	if r.Command == CommandRun && strings.TrimSpace(r.StateDir) == "" {
 		return errors.New("state directory is required")
-	}
-	if r.Command != CommandRun && strings.TrimSpace(r.RunID) == "" {
-		return errors.New("run ID is required")
 	}
 	if r.Command == CommandRun && r.ResumeRunID != "" && !validRunID(r.ResumeRunID) {
 		return fmt.Errorf("invalid resume run ID %q", r.ResumeRunID)
 	}
 	if r.Command == CommandRun && len(r.ComponentPaths) != len(DefaultComponentPaths) {
 		return fmt.Errorf("exactly %d component paths are required", len(DefaultComponentPaths))
+	}
+	wantRepository := DefaultGitHubRepo
+	if r.Provider == ProviderGitLab {
+		wantRepository = DefaultGitLabRepo
+	}
+	if r.Command == CommandRun && r.SourceRepository != wantRepository {
+		return fmt.Errorf("%s fixture must be %s", r.Provider, wantRepository)
 	}
 	if r.TenantNamespace == "" || r.ApplicationName == "" {
 		return errors.New("tenant namespace and application are required")
@@ -226,7 +203,7 @@ func (r Request) Validate() error {
 		name  string
 		value time.Duration
 	}{
-		{"preflight", r.Timeouts.Preflight}, {"build", r.Timeouts.Build}, {"pruning", r.Timeouts.Pruning}, {"archive", r.Timeouts.Archive}, {"collect", r.Timeouts.Collect},
+		{"preflight", r.Timeouts.Preflight}, {"build", r.Timeouts.Build},
 	} {
 		if timeout.value <= 0 {
 			return fmt.Errorf("%s timeout must be positive", timeout.name)
@@ -247,15 +224,9 @@ func validateProviderCredentials(provider string, credentials Credentials) error
 		if strings.TrimSpace(credentials.GitHubToken) == "" {
 			missing = append(missing, "GITHUB_TOKEN")
 		}
-		if strings.TrimSpace(credentials.GitHubOrg) == "" {
-			missing = append(missing, "MY_GITHUB_ORG")
-		}
 	case ProviderGitLab:
 		if strings.TrimSpace(credentials.GitLabToken) == "" {
 			missing = append(missing, "GITLAB_BOT_TOKEN")
-		}
-		if strings.TrimSpace(credentials.GitLabGroupID) == "" {
-			missing = append(missing, "GITLAB_GROUP_ID")
 		}
 	}
 	if len(missing) > 0 {

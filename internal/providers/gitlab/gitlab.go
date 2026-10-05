@@ -7,17 +7,55 @@ import (
 	"strings"
 	"time"
 
-	e2e "github.com/konflux-ci/e2e-tests/pkg/clients/gitlab"
 	"github.com/redhat-appstudio/konflux-test/internal/providers"
 	gl "github.com/xanzy/go-gitlab"
 )
 
+const (
+	CanonicalFixtureURL = "https://gitlab.com/konflux-qe/dr_test_mathwizz_gl"
+	canonicalProject    = "konflux-qe/dr_test_mathwizz_gl"
+)
+
 type client interface {
-	GetAllProjects() ([]*gl.Project, error)
+	GetProject(string) (*gl.Project, error)
 	GetFileMetaData(string, string, string) (*gl.File, error)
 	GetFile(string, string, string) (string, error)
-	UpdateFile(string, string, string, string) (string, error)
-	ForkRepository(string, string, string, string) (*gl.Project, error)
+	UpdateFile(string, string, string, string, string, string) (string, error)
+}
+
+type apiClient struct{ client *gl.Client }
+
+func (c apiClient) GetProject(project string) (*gl.Project, error) {
+	result, _, err := c.client.Projects.GetProject(project, nil)
+	return result, err
+}
+
+func (c apiClient) GetFileMetaData(project, path, branch string) (*gl.File, error) {
+	result, _, err := c.client.RepositoryFiles.GetFileMetaData(project, path, &gl.GetFileMetaDataOptions{Ref: &branch})
+	return result, err
+}
+
+func (c apiClient) GetFile(project, path, branch string) (string, error) {
+	result, _, err := c.client.RepositoryFiles.GetFile(project, path, &gl.GetFileOptions{Ref: &branch})
+	if err != nil {
+		return "", err
+	}
+	return result.Content, nil
+}
+
+func (c apiClient) UpdateFile(project, path, content, branch, expectedSHA, message string) (string, error) {
+	_, _, err := c.client.RepositoryFiles.UpdateFile(project, path, &gl.UpdateFileOptions{Branch: &branch, Content: &content, LastCommitID: &expectedSHA, CommitMessage: &message})
+	if err != nil {
+		return "", err
+	}
+	metadata, _, err := c.client.RepositoryFiles.GetFileMetaData(project, path, &gl.GetFileMetaDataOptions{Ref: &branch})
+	if err != nil {
+		return "", err
+	}
+	if metadata.CommitID != "" {
+		return metadata.CommitID, nil
+	}
+	return metadata.LastCommitID, nil
 }
 
 type Adapter struct{ client client }
@@ -25,58 +63,38 @@ type Adapter struct{ client client }
 func New(client client) *Adapter { return &Adapter{client: client} }
 
 func NewFromEnv() (*Adapter, error) {
-	return NewFromCredentials(os.Getenv("GITLAB_BOT_TOKEN"), os.Getenv("GITLAB_API_URL"), os.Getenv("GITLAB_GROUP_ID"))
+	return NewFromCredentials(os.Getenv("GITLAB_BOT_TOKEN"), os.Getenv("GITLAB_API_URL"))
 }
 
-func NewFromCredentials(token, apiURL, groupID string) (*Adapter, error) {
-	if apiURL == "" {
+func NewFromCredentials(token, apiURL string) (*Adapter, error) {
+	if strings.TrimSpace(token) == "" {
+		return nil, fmt.Errorf("GITLAB_BOT_TOKEN is required")
+	}
+	if strings.TrimSpace(apiURL) == "" {
 		apiURL = "https://gitlab.com/api/v4"
 	}
-	client, err := e2e.NewGitlabClient(token, apiURL, groupID)
+	gitlabClient, err := gl.NewClient(token, gl.WithBaseURL(apiURL))
 	if err != nil {
 		return nil, err
 	}
-	return New(client), nil
+	return New(apiClient{client: gitlabClient}), nil
 }
 
-func (a *Adapter) EnsureFork(_ context.Context, source providers.SourceRepository, fixture providers.FixtureRepository) (providers.FixtureRepository, error) {
+func (a *Adapter) ValidateFixture(ctx context.Context, fixture providers.FixtureRepository) (providers.FixtureRepository, error) {
 	if a == nil || a.client == nil {
 		return providers.FixtureRepository{}, fmt.Errorf("gitlab client is required")
 	}
-	if fixture.Owner == "" {
-		fixture.Owner = source.Owner
+	if fixture.Owner+"/"+fixture.Name != canonicalProject || (fixture.URL != "" && fixture.URL != CanonicalFixtureURL) {
+		return providers.FixtureRepository{}, fmt.Errorf("gitlab fixture must be %s", CanonicalFixtureURL)
 	}
-	if fixture.Name == "" {
-		fixture.Name = source.Name + "-konflux-test"
-	}
-	projects, err := a.client.GetAllProjects()
+	project, err := a.client.GetProject(canonicalProject)
 	if err != nil {
-		return providers.FixtureRepository{}, err
+		return providers.FixtureRepository{}, fmt.Errorf("validate gitlab fixture: %w", err)
 	}
-	for _, project := range projects {
-		if project != nil && project.PathWithNamespace == fixture.Owner+"/"+fixture.Name {
-			return a.withURL(fixture, project), nil
-		}
+	if project.PathWithNamespace != canonicalProject {
+		return providers.FixtureRepository{}, fmt.Errorf("gitlab API returned unexpected fixture identity")
 	}
-	fork, err := a.client.ForkRepository(source.Owner, source.Name, fixture.Owner, fixture.Name)
-	if err != nil {
-		return providers.FixtureRepository{}, fmt.Errorf("fork gitlab repository: %w", err)
-	}
-	return a.withURL(fixture, fork), nil
-}
-
-func (a *Adapter) VerifyFork(_ context.Context, fixture providers.FixtureRepository) error {
-	projects, err := a.client.GetAllProjects()
-	if err != nil {
-		return err
-	}
-	wanted := fixture.Owner + "/" + fixture.Name
-	for _, project := range projects {
-		if project != nil && project.PathWithNamespace == wanted {
-			return nil
-		}
-	}
-	return fmt.Errorf("gitlab fork %s is not available", wanted)
+	return providers.FixtureRepository{Owner: "konflux-qe", Name: "dr_test_mathwizz_gl", URL: CanonicalFixtureURL}, nil
 }
 
 func (a *Adapter) ReadFile(_ context.Context, fixture providers.FixtureRepository, path, branch string) (providers.FileVersion, error) {
@@ -96,44 +114,18 @@ func (a *Adapter) ReadFile(_ context.Context, fixture providers.FixtureRepositor
 	return providers.FileVersion{Path: path, Branch: branch, Content: content, SHA: sha, URL: metadata.FilePath}, nil
 }
 
-func (a *Adapter) UpdateFile(_ context.Context, fixture providers.FixtureRepository, path, branch, content, expectedSHA string) (providers.Commit, error) {
-	project := fixture.Owner + "/" + fixture.Name
-	metadata, err := a.client.GetFileMetaData(project, path, branch)
+func (a *Adapter) UpdateFile(ctx context.Context, fixture providers.FixtureRepository, path, branch, content, expectedSHA string) (providers.Commit, error) {
+	current, err := a.ReadFile(ctx, fixture, path, branch)
 	if err != nil {
 		return providers.Commit{}, err
 	}
-	actual := metadata.CommitID
-	if actual == "" {
-		actual = metadata.LastCommitID
-	}
-	if err := providers.ValidateExpectedSHA(expectedSHA, actual); err != nil {
+	if err := providers.ValidateExpectedSHA(expectedSHA, current.SHA); err != nil {
 		return providers.Commit{}, err
 	}
-	sha, err := a.client.UpdateFile(project, path, content, branch)
+	project := fixture.Owner + "/" + fixture.Name
+	sha, err := a.client.UpdateFile(project, path, content, branch, expectedSHA, "konflux-test trigger")
 	if err != nil {
 		return providers.Commit{}, err
 	}
 	return providers.Commit{SHA: sha, Message: "konflux-test trigger", CreatedAt: time.Now().UTC()}, nil
-}
-
-func (a *Adapter) CollectCommitEvidence(_ context.Context, fixture providers.FixtureRepository, commit providers.Commit) (map[string]any, error) {
-	return map[string]any{"provider": "gitlab", "repository": fixture.URL, "owner": fixture.Owner, "name": fixture.Name, "commitSHA": commit.SHA}, nil
-}
-
-func (a *Adapter) withURL(fixture providers.FixtureRepository, project *gl.Project) providers.FixtureRepository {
-	if project != nil {
-		if project.Path != "" {
-			fixture.Name = project.Path
-		}
-		if project.Namespace != nil && project.Namespace.FullPath != "" {
-			fixture.Owner = project.Namespace.FullPath
-		}
-		if project.WebURL != "" {
-			fixture.URL = project.WebURL
-		}
-	}
-	if fixture.URL == "" {
-		fixture.URL = fmt.Sprintf("https://gitlab.com/%s/%s", strings.Trim(fixture.Owner, "/"), fixture.Name)
-	}
-	return fixture
 }
