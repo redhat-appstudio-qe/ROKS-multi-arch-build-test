@@ -8,76 +8,77 @@ import (
 	"time"
 
 	gh "github.com/google/go-github/v66/github"
-	e2e "github.com/konflux-ci/e2e-tests/pkg/clients/github"
 	"github.com/redhat-appstudio/konflux-test/internal/providers"
 )
 
+const (
+	CanonicalFixtureURL = "https://github.com/redhat-appstudio-qe/dr_test_mathwizz"
+	canonicalOwner      = "redhat-appstudio-qe"
+	canonicalName       = "dr_test_mathwizz"
+)
+
 type client interface {
-	CheckIfRepositoryExist(string) bool
-	GetFile(string, string, string) (*gh.RepositoryContent, error)
-	UpdateFile(string, string, string, string, string) (*gh.RepositoryContentResponse, error)
-	ForkRepositoryFromOrg(string, string, string) (*gh.Repository, error)
+	GetRepository(string, string) (*gh.Repository, error)
+	GetFile(string, string, string, string) (*gh.RepositoryContent, error)
+	UpdateFile(string, string, string, string, string, string) (*gh.RepositoryContentResponse, error)
 }
 
-type Adapter struct {
-	client       client
-	organization string
+type apiClient struct{ client *gh.Client }
+
+func (c apiClient) GetRepository(owner, name string) (*gh.Repository, error) {
+	repository, _, err := c.client.Repositories.Get(context.Background(), owner, name)
+	return repository, err
 }
 
-func New(client client, organization string) *Adapter {
-	return &Adapter{client: client, organization: organization}
-}
-
-func NewFromEnv() (*Adapter, error) {
-	return NewFromCredentials(os.Getenv("GITHUB_TOKEN"), os.Getenv("MY_GITHUB_ORG"))
-}
-
-func NewFromCredentials(token, organization string) (*Adapter, error) {
-	if strings.TrimSpace(organization) == "" {
-		return nil, fmt.Errorf("MY_GITHUB_ORG is required")
-	}
-	client, err := e2e.NewGithubClient(token, organization)
+func (c apiClient) GetFile(owner, name, path, branch string) (*gh.RepositoryContent, error) {
+	file, _, _, err := c.client.Repositories.GetContents(context.Background(), owner, name, path, &gh.RepositoryContentGetOptions{Ref: branch})
 	if err != nil {
 		return nil, err
 	}
-	return New(client, organization), nil
+	if file == nil {
+		return nil, fmt.Errorf("github path %s is a directory", path)
+	}
+	return file, nil
 }
 
-func (a *Adapter) EnsureFork(_ context.Context, source providers.SourceRepository, fixture providers.FixtureRepository) (providers.FixtureRepository, error) {
+func (c apiClient) UpdateFile(owner, name, path, content, branch, sha string) (*gh.RepositoryContentResponse, error) {
+	message := "konflux-test trigger"
+	response, _, err := c.client.Repositories.UpdateFile(context.Background(), owner, name, path, &gh.RepositoryContentFileOptions{Message: &message, Content: []byte(content), Branch: &branch, SHA: &sha})
+	return response, err
+}
+
+type Adapter struct{ client client }
+
+func New(client client) *Adapter { return &Adapter{client: client} }
+
+func NewFromEnv() (*Adapter, error) { return NewFromCredentials(os.Getenv("GITHUB_TOKEN")) }
+
+func NewFromCredentials(token string) (*Adapter, error) {
+	if strings.TrimSpace(token) == "" {
+		return nil, fmt.Errorf("GITHUB_TOKEN is required")
+	}
+	return New(apiClient{client: gh.NewClient(nil).WithAuthToken(token)}), nil
+}
+
+func (a *Adapter) ValidateFixture(ctx context.Context, fixture providers.FixtureRepository) (providers.FixtureRepository, error) {
 	if a == nil || a.client == nil {
 		return providers.FixtureRepository{}, fmt.Errorf("github client is required")
 	}
-	if fixture.Owner == "" {
-		fixture.Owner = a.organization
+	if fixture.Owner != canonicalOwner || fixture.Name != canonicalName || (fixture.URL != "" && fixture.URL != CanonicalFixtureURL) {
+		return providers.FixtureRepository{}, fmt.Errorf("github fixture must be %s", CanonicalFixtureURL)
 	}
-	if fixture.Name == "" {
-		fixture.Name = source.Name + "-konflux-test"
-	}
-	if a.client.CheckIfRepositoryExist(fixture.Name) {
-		return a.withURL(fixture), nil
-	}
-	fork, err := a.client.ForkRepositoryFromOrg(source.Name, fixture.Name, source.Owner)
+	repository, err := a.client.GetRepository(canonicalOwner, canonicalName)
 	if err != nil {
-		return providers.FixtureRepository{}, fmt.Errorf("fork github repository: %w", err)
+		return providers.FixtureRepository{}, fmt.Errorf("validate github fixture: %w", err)
 	}
-	fixture.Name = fork.GetName()
-	fixture.Owner = fork.GetOwner().GetLogin()
-	fixture.URL = fork.GetHTMLURL()
-	return fixture, nil
-}
-
-func (a *Adapter) VerifyFork(_ context.Context, fixture providers.FixtureRepository) error {
-	if a == nil || a.client == nil {
-		return fmt.Errorf("github client is required")
+	if repository.GetOwner().GetLogin() != canonicalOwner || repository.GetName() != canonicalName {
+		return providers.FixtureRepository{}, fmt.Errorf("github API returned unexpected fixture identity")
 	}
-	if fixture.Name == "" || !a.client.CheckIfRepositoryExist(fixture.Name) {
-		return fmt.Errorf("github fork %s/%s is not available", fixture.Owner, fixture.Name)
-	}
-	return nil
+	return providers.FixtureRepository{Owner: canonicalOwner, Name: canonicalName, URL: CanonicalFixtureURL}, nil
 }
 
 func (a *Adapter) ReadFile(_ context.Context, fixture providers.FixtureRepository, path, branch string) (providers.FileVersion, error) {
-	file, err := a.client.GetFile(fixture.Name, path, branch)
+	file, err := a.client.GetFile(fixture.Owner, fixture.Name, path, branch)
 	if err != nil {
 		return providers.FileVersion{}, err
 	}
@@ -96,20 +97,9 @@ func (a *Adapter) UpdateFile(ctx context.Context, fixture providers.FixtureRepos
 	if err := providers.ValidateExpectedSHA(expectedSHA, current.SHA); err != nil {
 		return providers.Commit{}, err
 	}
-	updated, err := a.client.UpdateFile(fixture.Name, path, content, branch, expectedSHA)
+	updated, err := a.client.UpdateFile(fixture.Owner, fixture.Name, path, content, branch, expectedSHA)
 	if err != nil {
 		return providers.Commit{}, err
 	}
 	return providers.Commit{SHA: updated.Commit.GetSHA(), URL: updated.Commit.GetHTMLURL(), Message: "konflux-test trigger", CreatedAt: time.Now().UTC()}, nil
-}
-
-func (a *Adapter) CollectCommitEvidence(_ context.Context, fixture providers.FixtureRepository, commit providers.Commit) (map[string]any, error) {
-	return map[string]any{"provider": "github", "repository": fixture.URL, "owner": fixture.Owner, "name": fixture.Name, "commitSHA": commit.SHA, "commitURL": commit.URL}, nil
-}
-
-func (a *Adapter) withURL(fixture providers.FixtureRepository) providers.FixtureRepository {
-	if fixture.URL == "" {
-		fixture.URL = fmt.Sprintf("https://github.com/%s/%s", fixture.Owner, fixture.Name)
-	}
-	return fixture
 }

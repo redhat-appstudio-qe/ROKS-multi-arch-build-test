@@ -17,3 +17,13 @@ func TestValidateExpectedSHARejectsStaleVersion(t *testing.T) {
 		t.Fatal("expected stale-version error")
 	}
 }
+
+func TestParseRepositoryURLForTest(t *testing.T) {
+	got, err := ParseRepository("https://gitlab.com/konflux-qe/dr_test_mathwizz_gl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.URL != "https://gitlab.com/konflux-qe/dr_test_mathwizz_gl" {
+		t.Fatalf("url = %q", got.URL)
+	}
+}

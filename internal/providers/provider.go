@@ -36,11 +36,9 @@ type Commit struct {
 }
 
 type Provider interface {
-	EnsureFork(context.Context, SourceRepository, FixtureRepository) (FixtureRepository, error)
-	VerifyFork(context.Context, FixtureRepository) error
+	ValidateFixture(context.Context, FixtureRepository) (FixtureRepository, error)
 	ReadFile(context.Context, FixtureRepository, string, string) (FileVersion, error)
 	UpdateFile(context.Context, FixtureRepository, string, string, string, string) (Commit, error)
-	CollectCommitEvidence(context.Context, FixtureRepository, Commit) (map[string]any, error)
 }
 
 func ParseRepository(raw string) (SourceRepository, error) {

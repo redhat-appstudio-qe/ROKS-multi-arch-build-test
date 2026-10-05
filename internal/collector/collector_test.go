@@ -11,34 +11,51 @@ import (
 	"github.com/redhat-appstudio/konflux-test/internal/model"
 )
 
-func TestCollectorContinuesAfterOptionalSourceFailure(t *testing.T) {
+func TestCollectorVerifiesRequiredFailureArtifacts(t *testing.T) {
 	root := t.TempDir()
-	report, err := (Collector{StateDir: root}).Collect(context.Background(), "run-1", model.RunManifest{RunID: "run-1"}, []Source{
-		{Name: "workload", Collect: func(context.Context, string) error { return errors.New("api unavailable") }},
-		{Name: "registry", Optional: true, Collect: func(context.Context, string) error { return nil }},
-	})
+	report, err := (Collector{StateDir: root}).CollectAndVerify(context.Background(), "run-1", model.RunManifest{RunID: "run-1"}, requiredTestSources())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Attempts) != 2 || report.Attempts[0].Status != "error" || report.Attempts[1].Status != "success" {
-		t.Fatalf("unexpected report: %#v", report)
+	if report.ArtifactPath != filepath.Join(root, "run-1") || len(report.RequiredArtifactNames) != 7 || len(report.SavedArtifactNames) != 7 || report.VerifiedAt.IsZero() {
+		t.Fatalf("report = %#v", report)
 	}
-	if _, err := os.Stat(filepath.Join(root, "run-1", "collection-report.json")); err != nil {
-		t.Fatal(err)
+}
+
+func TestCollectorSuppressesVerifiedReportWhenRequiredSourceFails(t *testing.T) {
+	root := t.TempDir()
+	sources := requiredTestSources()
+	sources[0].Collect = func(context.Context, string) error { return errors.New("api unavailable") }
+	report, err := (Collector{StateDir: root}).CollectAndVerify(context.Background(), "run-2", model.RunManifest{RunID: "run-2"}, sources)
+	if err == nil || len(report.CollectionErrors) == 0 || len(report.SavedArtifactNames) >= len(report.RequiredArtifactNames) {
+		t.Fatalf("report = %#v err=%v", report, err)
 	}
 }
 
 func TestCollectorRedactsManifestValues(t *testing.T) {
 	root := t.TempDir()
-	_, err := (Collector{StateDir: root}).Collect(context.Background(), "run-2", model.RunManifest{RunID: "run-2", Archive: []model.ArchiveEvidence{{RawResponse: map[string]any{"password": "secret-value"}}}}, nil)
+	_, err := (Collector{StateDir: root}).Collect(context.Background(), "run-3", model.RunManifest{RunID: "run-3", BuildOutputs: []model.BuildOutputEvidence{{CreatedOutputs: map[string]string{"password": "secret-value"}}}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(root, "run-2", "session", "manifest.json"))
+	data, err := os.ReadFile(filepath.Join(root, "run-3", "session", "manifest.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(data), "secret-value") {
 		t.Fatal("secret value leaked")
 	}
+}
+
+func requiredTestSources() []Source {
+	paths := []string{"workload/applications.json", "workload/components.json", "workload/pipelineruns.json", "workload/taskruns.json", "workload/pods.json"}
+	sources := make([]Source, 0, len(paths))
+	for index, path := range paths {
+		path := path
+		index := index
+		sources = append(sources, Source{Name: filepath.Base(path), Path: path, Collect: func(_ context.Context, root string) error {
+			return writeJSON(filepath.Join(root, path), map[string]any{"index": index})
+		}})
+	}
+	return sources
 }

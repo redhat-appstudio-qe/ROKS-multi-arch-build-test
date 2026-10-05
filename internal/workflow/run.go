@@ -13,15 +13,16 @@ import (
 
 const TriggerCommentFormat = "# konflux-test trigger %s %d"
 
+type Confirmation interface {
+	Confirm(context.Context, string) (bool, error)
+}
+
 type Stage interface {
 	Preflight(context.Context, *model.RunManifest) error
 	EnsureFixture(context.Context, *model.RunManifest) error
-	CaptureBaseline(context.Context, *model.RunManifest) error
 	TriggerComponents(context.Context, *model.RunManifest) error
 	VerifyBuilds(context.Context, *model.RunManifest) error
-	VerifyImages(context.Context, *model.RunManifest) error
-	ObservePruning(context.Context, *model.RunManifest) error
-	VerifyArchive(context.Context, *model.RunManifest) error
+	VerifyBuildOutputs(context.Context, *model.RunManifest) error
 }
 
 type Options struct {
@@ -38,8 +39,6 @@ type Options struct {
 type PhaseTimeouts struct {
 	Preflight time.Duration
 	Build     time.Duration
-	Pruning   time.Duration
-	Archive   time.Duration
 }
 
 type Runner struct {
@@ -73,6 +72,12 @@ func (r Runner) Run(ctx context.Context, options Options) (model.RunManifest, er
 		if manifest.Provider != options.Provider || manifest.TargetClusterServer != options.ClusterServer {
 			return manifest, fmt.Errorf("resume ownership mismatch")
 		}
+		if manifest.Fixture.TenantNamespace == "" || options.FixtureNamespace == "" || manifest.Fixture.TenantNamespace != options.FixtureNamespace {
+			return manifest, fmt.Errorf("resume ownership mismatch")
+		}
+		if manifest.Phase == model.PhaseFailed {
+			return manifest, fmt.Errorf("cannot resume failed run %s; start a new run", runID)
+		}
 	} else {
 		manifest = model.RunManifest{RunID: runID, Provider: options.Provider, TargetClusterServer: options.ClusterServer, Phase: model.PhasePreflight, CreatedAt: now().UTC(), Fixture: model.FixtureIdentity{TenantNamespace: options.FixtureNamespace, Application: options.Application}}
 		if err := r.Store.Create(manifest); err != nil {
@@ -86,12 +91,9 @@ func (r Runner) Run(ctx context.Context, options Options) (model.RunManifest, er
 	}{
 		{model.PhasePreflight, options.Timeouts.Preflight, r.Stage.Preflight},
 		{model.PhaseFixtureReady, options.Timeouts.Preflight, r.Stage.EnsureFixture},
-		{model.PhaseFixtureReady, options.Timeouts.Preflight, r.Stage.CaptureBaseline},
 		{model.PhaseTriggered, options.Timeouts.Build, r.Stage.TriggerComponents},
 		{model.PhaseBuildsVerified, options.Timeouts.Build, r.Stage.VerifyBuilds},
-		{model.PhaseImagesVerified, options.Timeouts.Build, r.Stage.VerifyImages},
-		{model.PhasePruningWait, options.Timeouts.Pruning, r.Stage.ObservePruning},
-		{model.PhaseArchiveVerified, options.Timeouts.Archive, r.Stage.VerifyArchive},
+		{model.PhaseBuildOutputsVerified, options.Timeouts.Build, r.Stage.VerifyBuildOutputs},
 		{model.PhaseCompleted, 0, func(context.Context, *model.RunManifest) error { return nil }},
 	}
 	for index, step := range steps {
@@ -124,13 +126,12 @@ func shouldSkip(current, target model.Phase, index int, _ []struct {
 		return true
 	}
 	start := map[model.Phase]int{
-		model.PhasePreflight:       0,
-		model.PhaseFixtureReady:    2,
-		model.PhaseTriggered:       4,
-		model.PhaseBuildsVerified:  5,
-		model.PhaseImagesVerified:  6,
-		model.PhasePruningWait:     7,
-		model.PhaseArchiveVerified: 8,
+		model.PhasePreflight:            0,
+		model.PhaseFixtureReady:         1,
+		model.PhaseTriggered:            2,
+		model.PhaseBuildsVerified:       3,
+		model.PhaseBuildOutputsVerified: 4,
+		model.PhaseCompleted:            5,
 	}
 	return index < start[current] || target == ""
 }

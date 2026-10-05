@@ -2,42 +2,113 @@ package cleanup
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
-	"github.com/redhat-appstudio/konflux-test/internal/evidence"
-	"github.com/redhat-appstudio/konflux-test/internal/model"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/dynamic/fake"
 )
 
-type fakeClient struct {
-	resources []Resource
-	deleted   []Resource
-}
-
-func (f *fakeClient) List(context.Context, string) ([]Resource, error) { return f.resources, nil }
-func (f *fakeClient) Get(_ context.Context, resource Resource) (Resource, error) {
-	return resource, nil
-}
-func (f *fakeClient) Delete(_ context.Context, resource Resource) error {
-	f.deleted = append(f.deleted, resource)
-	return nil
-}
-
-func TestCleanupDeletesOnlyOwnedTransientResources(t *testing.T) {
-	store := evidence.NewManifestStore(t.TempDir())
-	manifest := model.RunManifest{RunID: "run-1", TargetClusterServer: "https://api.example", Fixture: model.FixtureIdentity{TenantNamespace: "tenant", Application: "app"}}
-	if err := store.Create(manifest); err != nil {
+func TestNamespaceServiceDeletesOnlyExactOwnedNamespace(t *testing.T) {
+	client := fake.NewSimpleDynamicClient(runtime.NewScheme(), namespace("tenant", "run-1", true))
+	service := NamespaceService{Dynamic: client}
+	if err := service.Delete(context.Background(), "tenant", "run-1"); err != nil {
 		t.Fatal(err)
 	}
-	client := &fakeClient{resources: []Resource{
-		{Kind: "TaskRun", Namespace: "tenant", Name: "owned", Labels: map[string]string{ManagedByLabel: ManagedByValue, RunIDLabel: "run-1"}},
-		{Kind: "PipelineRun", Namespace: "tenant", Name: "acceptance", Labels: map[string]string{ManagedByLabel: ManagedByValue, RunIDLabel: "run-1"}},
-		{Kind: "ConfigMap", Namespace: "tenant", Name: "unowned", Labels: map[string]string{}},
-	}}
-	result, err := (Service{Store: store, Client: client}).Cleanup(context.Background(), "run-1", "https://api.example")
+	if err := service.WaitDeleted(context.Background(), "tenant"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNamespaceServiceRefusesUnownedNamespace(t *testing.T) {
+	client := fake.NewSimpleDynamicClient(runtime.NewScheme(), namespace("tenant", "run-1", false))
+	err := (NamespaceService{Dynamic: client}).Delete(context.Background(), "tenant", "run-1")
+	if err == nil || !strings.Contains(err.Error(), "refusing") {
+		t.Fatalf("error = %v", err)
+	}
+	if _, err := client.Resource(NamespaceGVR).Get(context.Background(), "tenant", metav1.GetOptions{}); err != nil {
+		t.Fatal("namespace was deleted")
+	}
+}
+
+func TestNamespaceServiceRequiresRunIDForDeletion(t *testing.T) {
+	client := fake.NewSimpleDynamicClient(runtime.NewScheme(), namespace("tenant", "run-1", true))
+	if err := (NamespaceService{Dynamic: client}).Delete(context.Background(), "tenant", ""); err == nil {
+		t.Fatal("expected missing run ID rejection")
+	}
+}
+
+func TestNamespaceServiceFindCandidatesUsesCLINamesAndOwnershipSelector(t *testing.T) {
+	client := fake.NewSimpleDynamicClient(
+		runtime.NewScheme(),
+		namespace("mathwizz-test-github", "run-1", true),
+		namespace("mathwizz-test-github-20261005b", "run-2", true),
+		namespace("other-tenant", "run-3", true),
+	)
+	service := NamespaceService{
+		Dynamic:    client,
+		NameLister: staticNameLister{names: []string{"mathwizz-test-github", "mathwizz-test-github-20261005b"}},
+	}
+
+	candidates, err := service.FindCandidates(context.Background(), "mathwizz-test-github")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Deleted) != 1 || len(result.Refused) != 2 || len(client.deleted) != 1 {
-		t.Fatalf("result=%#v deleted=%#v", result, client.deleted)
+	if len(candidates) != 2 || candidates[0].Name != "mathwizz-test-github" || candidates[1].Name != "mathwizz-test-github-20261005b" {
+		t.Fatalf("candidates = %#v", candidates)
 	}
+}
+
+func TestNamespaceServiceFindCandidatesRejectsUnownedCLIName(t *testing.T) {
+	client := fake.NewSimpleDynamicClient(
+		runtime.NewScheme(),
+		namespace("mathwizz-test-github", "run-1", true),
+		namespace("mathwizz-test-github-20261005b", "run-2", false),
+	)
+	service := NamespaceService{
+		Dynamic:    client,
+		NameLister: staticNameLister{names: []string{"mathwizz-test-github", "mathwizz-test-github-20261005b"}},
+	}
+
+	_, err := service.FindCandidates(context.Background(), "mathwizz-test-github")
+	if err == nil || !strings.Contains(err.Error(), "without exact konflux-test ownership labels") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestOCNamespaceNameListerUsesCLIOutput(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "oc")
+	content := "#!/bin/sh\n[ \"$1 $2 $3 $4 $5\" = \"get namespaces -o name --no-headers\" ] || exit 1\nprintf '%s\\n' namespace/mathwizz-test-github namespace/mathwizz-test-github-20261005b\n"
+	if err := os.WriteFile(script, []byte(content), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	names, err := (OCNamespaceNameLister{Command: script}).List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"mathwizz-test-github", "mathwizz-test-github-20261005b"}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Fatalf("names = %#v, want %#v", names, want)
+	}
+}
+
+type staticNameLister struct {
+	names []string
+}
+
+func (l staticNameLister) List(context.Context) ([]string, error) {
+	return append([]string(nil), l.names...), nil
+}
+
+func namespace(name, runID string, owned bool) *unstructured.Unstructured {
+	labels := map[string]any{RunIDLabel: runID}
+	if owned {
+		labels[ManagedByLabel] = ManagedByValue
+	}
+	return &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]any{"name": name, "labels": labels}}}
 }
