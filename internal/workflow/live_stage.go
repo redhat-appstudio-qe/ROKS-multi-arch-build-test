@@ -200,8 +200,12 @@ func fixtureFromManifest(identity model.FixtureIdentity) providers.FixtureReposi
 }
 
 func (s *LiveStage) VerifyBuilds(ctx context.Context, manifest *model.RunManifest) error {
+	namespace := manifest.Fixture.TenantNamespace
+	if namespace == "" {
+		return fmt.Errorf("run manifest does not contain a tenant namespace")
+	}
 	identities, err := waitForBuildMatches(ctx, s.Request.Timeouts.Build, 10*time.Second, manifest.TriggerCommits, func(ctx context.Context) ([]unstructured.Unstructured, error) {
-		components, err := s.Clients.Dynamic.Resource(cluster.ComponentGVR).Namespace(s.Request.TenantNamespace).List(ctx, metav1.ListOptions{})
+		components, err := s.Clients.Dynamic.Resource(cluster.ComponentGVR).Namespace(namespace).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("list components while waiting for builds: %w", err)
 		}
@@ -210,7 +214,7 @@ func (s *LiveStage) VerifyBuilds(ctx context.Context, manifest *model.RunManifes
 				return nil, err
 			}
 		}
-		list, err := s.Clients.Dynamic.Resource(PipelineRunGVR).Namespace(s.Request.TenantNamespace).List(ctx, metav1.ListOptions{})
+		list, err := s.Clients.Dynamic.Resource(PipelineRunGVR).Namespace(namespace).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return nil, err
 		}
@@ -372,7 +376,7 @@ func pipelineRunConditionStatus(object *unstructured.Unstructured) string {
 }
 
 func (s *LiveStage) VerifyBuildOutputs(ctx context.Context, manifest *model.RunManifest) error {
-	evidence, err := (cluster.BuildOutputInspector{Dynamic: s.Clients.Dynamic}).Verify(ctx, manifest.PipelineRuns)
+	evidence, err := (cluster.BuildOutputInspector{Dynamic: s.Clients.Dynamic, Kubernetes: s.Clients.Kubernetes}).Verify(ctx, manifest.PipelineRuns)
 	if err != nil {
 		return err
 	}

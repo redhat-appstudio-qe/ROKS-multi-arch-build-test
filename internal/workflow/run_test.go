@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,5 +86,62 @@ func TestRunnerAppliesPhaseTimeouts(t *testing.T) {
 	}
 	if !stage.deadlines["preflight"] {
 		t.Fatalf("preflight context had no deadline: %#v", stage.deadlines)
+	}
+}
+
+func TestRunnerRejectsResumeFromFailedRun(t *testing.T) {
+	store := evidence.NewManifestStore(t.TempDir())
+	failedStage := &fakeStage{fail: "build-outputs"}
+	runner := Runner{Store: store, Stage: failedStage}
+	_, _ = runner.Run(context.Background(), Options{RunID: "run-failed", Provider: "github", ClusterServer: "https://api.example", FixtureNamespace: "tenant"})
+
+	resumed, err := (Runner{Store: store, Stage: &fakeStage{}}).Run(context.Background(), Options{
+		RunID:            "run-failed",
+		Provider:         "github",
+		ClusterServer:    "https://api.example",
+		FixtureNamespace: "tenant",
+		Resume:           true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "failed run") || resumed.Phase != model.PhaseFailed {
+		t.Fatalf("manifest=%#v err=%v, want failed resume rejection", resumed, err)
+	}
+}
+
+func TestRunnerRejectsResumeWithDifferentTenant(t *testing.T) {
+	store := evidence.NewManifestStore(t.TempDir())
+	runner := Runner{Store: store, Stage: &fakeStage{}}
+	_, err := runner.Run(context.Background(), Options{RunID: "run-tenant", Provider: "github", ClusterServer: "https://api.example", FixtureNamespace: "tenant-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resumed, err := (Runner{Store: store, Stage: &fakeStage{}}).Run(context.Background(), Options{
+		RunID:            "run-tenant",
+		Provider:         "github",
+		ClusterServer:    "https://api.example",
+		FixtureNamespace: "tenant-b",
+		Resume:           true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "resume ownership mismatch") || resumed.Fixture.TenantNamespace != "tenant-a" {
+		t.Fatalf("manifest=%#v err=%v, want tenant ownership rejection", resumed, err)
+	}
+}
+
+func TestRunnerRejectsResumeWithoutTenant(t *testing.T) {
+	store := evidence.NewManifestStore(t.TempDir())
+	runner := Runner{Store: store, Stage: &fakeStage{}}
+	_, err := runner.Run(context.Background(), Options{RunID: "run-tenant-empty", Provider: "github", ClusterServer: "https://api.example", FixtureNamespace: "tenant-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resumed, err := (Runner{Store: store, Stage: &fakeStage{}}).Run(context.Background(), Options{
+		RunID:         "run-tenant-empty",
+		Provider:      "github",
+		ClusterServer: "https://api.example",
+		Resume:        true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "resume ownership mismatch") || resumed.Fixture.TenantNamespace != "tenant-a" {
+		t.Fatalf("manifest=%#v err=%v, want missing tenant rejection", resumed, err)
 	}
 }

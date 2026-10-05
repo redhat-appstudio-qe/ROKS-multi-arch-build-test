@@ -72,6 +72,12 @@ func (r Runner) Run(ctx context.Context, options Options) (model.RunManifest, er
 		if manifest.Provider != options.Provider || manifest.TargetClusterServer != options.ClusterServer {
 			return manifest, fmt.Errorf("resume ownership mismatch")
 		}
+		if manifest.Fixture.TenantNamespace == "" || options.FixtureNamespace == "" || manifest.Fixture.TenantNamespace != options.FixtureNamespace {
+			return manifest, fmt.Errorf("resume ownership mismatch")
+		}
+		if manifest.Phase == model.PhaseFailed {
+			return manifest, fmt.Errorf("cannot resume failed run %s; start a new run", runID)
+		}
 	} else {
 		manifest = model.RunManifest{RunID: runID, Provider: options.Provider, TargetClusterServer: options.ClusterServer, Phase: model.PhasePreflight, CreatedAt: now().UTC(), Fixture: model.FixtureIdentity{TenantNamespace: options.FixtureNamespace, Application: options.Application}}
 		if err := r.Store.Create(manifest); err != nil {

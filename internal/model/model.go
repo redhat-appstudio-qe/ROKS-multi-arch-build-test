@@ -85,6 +85,7 @@ type BuildOutputEvidence struct {
 	PipelineRun    PipelineRunIdentity `json:"pipelineRun"`
 	Platforms      []string            `json:"platforms"`
 	CreatedOutputs map[string]string   `json:"createdOutputs,omitempty"`
+	OutputDigests  map[string]string   `json:"outputDigests,omitempty"`
 	VerifiedAt     time.Time           `json:"verifiedAt"`
 }
 
