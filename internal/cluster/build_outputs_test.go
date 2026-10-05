@@ -12,12 +12,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic/fake"
+	"k8s.io/client-go/kubernetes"
 	kubernetesfake "k8s.io/client-go/kubernetes/fake"
 )
 
 func TestBuildOutputInspectorRequiresBothLinuxPlatforms(t *testing.T) {
-	client := buildOutputClient(t, "linux/amd64", "linux/arm64")
-	got, err := (BuildOutputInspector{Dynamic: client}).Verify(context.Background(), []model.PipelineRunIdentity{buildIdentity()})
+	client, kubernetesClient := buildOutputClient(t, "linux/amd64", "linux/arm64")
+	got, err := (BuildOutputInspector{Dynamic: client, Kubernetes: kubernetesClient}).Verify(context.Background(), []model.PipelineRunIdentity{buildIdentity()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,8 +28,8 @@ func TestBuildOutputInspectorRequiresBothLinuxPlatforms(t *testing.T) {
 }
 
 func TestBuildOutputInspectorRejectsMissingPlatform(t *testing.T) {
-	client := buildOutputClient(t, "linux/amd64")
-	_, err := (BuildOutputInspector{Dynamic: client}).Verify(context.Background(), []model.PipelineRunIdentity{buildIdentity()})
+	client, kubernetesClient := buildOutputClient(t, "linux/amd64")
+	_, err := (BuildOutputInspector{Dynamic: client, Kubernetes: kubernetesClient}).Verify(context.Background(), []model.PipelineRunIdentity{buildIdentity()})
 	if err == nil || !strings.Contains(err.Error(), "linux/arm64") {
 		t.Fatalf("error = %v, want missing arm64", err)
 	}
@@ -65,7 +66,7 @@ func TestBuildOutputInspectorRejectsIncompleteBuildahResults(t *testing.T) {
 	arm64TaskRun := taskRunWithDeclaredPlatform("build-task-arm64", "tenant", "uid-1", "linux/arm64", "quay.io/example/arm64", "sha256:arm64")
 	dynamicClient := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds(), pipeline, amd64TaskRun, arm64TaskRun)
 
-	_, err := (BuildOutputInspector{Dynamic: dynamicClient}).Verify(context.Background(), []model.PipelineRunIdentity{buildIdentity()})
+	_, err := (BuildOutputInspector{Dynamic: dynamicClient, Kubernetes: kubernetesfake.NewSimpleClientset()}).Verify(context.Background(), []model.PipelineRunIdentity{buildIdentity()})
 	if err == nil || !strings.Contains(err.Error(), "IMAGE_DIGEST") {
 		t.Fatalf("error = %v, want incomplete IMAGE_DIGEST evidence", err)
 	}
@@ -94,23 +95,31 @@ func TestBuildOutputInspectorUsesAssignedNodeArchitecture(t *testing.T) {
 	}
 }
 
+func TestBuildOutputInspectorRequiresBuildahTaskIdentity(t *testing.T) {
+	taskRun := taskRunObject("build-task", "tenant", "uid-1", "linux/amd64")
+	taskRun.SetLabels(map[string]string{"tekton.dev/pipelineTask": "build-container", "tekton.dev/task": "other-task"})
+	if isBuildTaskRun(taskRun) {
+		t.Fatal("non-Buildah TaskRun was accepted as build output evidence")
+	}
+}
+
 func TestBuildOutputInspectorRejectsFailedOrUnrelatedPipelineRun(t *testing.T) {
-	client := buildOutputClient(t, "linux/amd64", "linux/arm64")
+	client, kubernetesClient := buildOutputClient(t, "linux/amd64", "linux/arm64")
 	failed := pipelineRunObject("build", "tenant", "uid-1", "False")
 	client = fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds(), failed)
-	_, err := (BuildOutputInspector{Dynamic: client}).Verify(context.Background(), []model.PipelineRunIdentity{buildIdentity()})
+	_, err := (BuildOutputInspector{Dynamic: client, Kubernetes: kubernetesClient}).Verify(context.Background(), []model.PipelineRunIdentity{buildIdentity()})
 	if err == nil || !strings.Contains(err.Error(), "did not succeed") {
 		t.Fatalf("error = %v, want failed PipelineRun", err)
 	}
 
-	client = buildOutputClient(t, "linux/amd64", "linux/arm64")
-	_, err = (BuildOutputInspector{Dynamic: client}).Verify(context.Background(), []model.PipelineRunIdentity{{Namespace: "tenant", Name: "other", UID: "uid-other", Component: "web"}})
+	client, kubernetesClient = buildOutputClient(t, "linux/amd64", "linux/arm64")
+	_, err = (BuildOutputInspector{Dynamic: client, Kubernetes: kubernetesClient}).Verify(context.Background(), []model.PipelineRunIdentity{{Namespace: "tenant", Name: "other", UID: "uid-other", Component: "web"}})
 	if err == nil || !strings.Contains(err.Error(), "get PipelineRun") {
 		t.Fatalf("error = %v, want unrelated PipelineRun failure", err)
 	}
 }
 
-func buildOutputClient(t *testing.T, platforms ...string) *fake.FakeDynamicClient {
+func buildOutputClient(t *testing.T, platforms ...string) (*fake.FakeDynamicClient, kubernetes.Interface) {
 	t.Helper()
 	pipeline := pipelineRunObject("build", "tenant", "uid-1", "True")
 	taskRuns := make([]*unstructured.Unstructured, 0, len(platforms))
@@ -122,7 +131,17 @@ func buildOutputClient(t *testing.T, platforms ...string) *fake.FakeDynamicClien
 	for _, taskRun := range taskRuns {
 		objects = append(objects, taskRun)
 	}
-	return fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds(), objects...)
+	kubeObjects := make([]runtime.Object, 0, len(taskRuns)*2)
+	for index, taskRun := range taskRuns {
+		platform := platforms[index]
+		podName, _, _ := unstructured.NestedString(taskRun.Object, "status", "podName")
+		nodeName := "node-" + strings.TrimPrefix(strings.ReplaceAll(platform, "/", "-"), "linux-")
+		kubeObjects = append(kubeObjects,
+			&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: "tenant"}, Spec: corev1.PodSpec{NodeName: nodeName}},
+			&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName, Labels: map[string]string{"kubernetes.io/arch": strings.TrimPrefix(strings.ReplaceAll(platform, "/", "-"), "linux-")}}},
+		)
+	}
+	return fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds(), objects...), kubernetesfake.NewSimpleClientset(kubeObjects...)
 }
 
 func buildIdentity() model.PipelineRunIdentity {
@@ -146,10 +165,10 @@ func taskRunObject(name, namespace, ownerUID, platform string) *unstructured.Uns
 		"kind":       "TaskRun",
 		"metadata": map[string]any{
 			"name": name, "namespace": namespace,
-			"labels":          map[string]any{"tekton.dev/pipelineTask": "build-container"},
+			"labels":          map[string]any{"tekton.dev/pipelineTask": "build-container", "tekton.dev/task": "buildah-oci-ta"},
 			"ownerReferences": []any{map[string]any{"apiVersion": "tekton.dev/v1", "kind": "PipelineRun", "name": "build", "uid": ownerUID, "controller": true}},
 		},
-		"status": map[string]any{"conditions": []any{map[string]any{"type": "Succeeded", "status": "True"}}, "results": []any{
+		"status": map[string]any{"podName": "build-pod-" + strings.TrimPrefix(strings.ReplaceAll(platform, "/", "-"), "linux-"), "conditions": []any{map[string]any{"type": "Succeeded", "status": "True"}}, "results": []any{
 			map[string]any{"name": "PLATFORM", "value": platform},
 			map[string]any{"name": "IMAGE_URL", "value": "quay.io/example/image"},
 			map[string]any{"name": "IMAGE_DIGEST", "value": "sha256:" + strings.ReplaceAll(platform, "/", "-")},
@@ -163,7 +182,7 @@ func buildahTaskRunObject(name, namespace, ownerUID, podName, digest string) *un
 		"kind":       "TaskRun",
 		"metadata": map[string]any{
 			"name": name, "namespace": namespace,
-			"labels":          map[string]any{"tekton.dev/pipelineTask": "build-container"},
+			"labels":          map[string]any{"tekton.dev/pipelineTask": "build-container", "tekton.dev/task": "buildah-oci-ta"},
 			"ownerReferences": []any{map[string]any{"apiVersion": "tekton.dev/v1", "kind": "PipelineRun", "name": "build", "uid": ownerUID, "controller": true}},
 		},
 		"status": map[string]any{

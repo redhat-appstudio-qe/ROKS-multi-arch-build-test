@@ -29,6 +29,9 @@ func (i BuildOutputInspector) Verify(ctx context.Context, identities []model.Pip
 	if i.Dynamic == nil {
 		return nil, fmt.Errorf("dynamic client is required")
 	}
+	if i.Kubernetes == nil {
+		return nil, fmt.Errorf("kubernetes client is required for Pod and Node build evidence")
+	}
 	if len(identities) == 0 {
 		return nil, fmt.Errorf("at least one PipelineRun is required")
 	}
@@ -150,8 +153,8 @@ func conditionStatus(object *unstructured.Unstructured) string {
 
 func isBuildTaskRun(taskRun *unstructured.Unstructured) bool {
 	labels := taskRun.GetLabels()
-	if labels["tekton.dev/pipelineTask"] == "build-container" {
-		return true
+	if labels["tekton.dev/pipelineTask"] != "build-container" {
+		return false
 	}
 	if strings.Contains(strings.ToLower(labels["tekton.dev/task"]), "buildah") {
 		return true
