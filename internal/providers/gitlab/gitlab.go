@@ -2,6 +2,8 @@ package gitlab
 
 import (
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -20,7 +22,7 @@ type client interface {
 	GetProject(string) (*gl.Project, error)
 	GetFileMetaData(string, string, string) (*gl.File, error)
 	GetFile(string, string, string) (string, error)
-	UpdateFile(string, string, string, string, string, string) (string, error)
+	UpdateFile(string, string, string, string, string, string) error
 }
 
 type apiClient struct{ client *gl.Client }
@@ -43,24 +45,23 @@ func (c apiClient) GetFile(project, path, branch string) (string, error) {
 	return result.Content, nil
 }
 
-func (c apiClient) UpdateFile(project, path, content, branch, expectedSHA, message string) (string, error) {
+func (c apiClient) UpdateFile(project, path, content, branch, expectedSHA, message string) error {
 	_, _, err := c.client.RepositoryFiles.UpdateFile(project, path, &gl.UpdateFileOptions{Branch: &branch, Content: &content, LastCommitID: &expectedSHA, CommitMessage: &message})
-	if err != nil {
-		return "", err
-	}
-	metadata, _, err := c.client.RepositoryFiles.GetFileMetaData(project, path, &gl.GetFileMetaDataOptions{Ref: &branch})
-	if err != nil {
-		return "", err
-	}
-	if metadata.CommitID != "" {
-		return metadata.CommitID, nil
-	}
-	return metadata.LastCommitID, nil
+	return err
 }
 
-type Adapter struct{ client client }
+type Adapter struct {
+	client client
+	retry  providers.RetryPolicy
+}
 
-func New(client client) *Adapter { return &Adapter{client: client} }
+func New(client client) *Adapter {
+	return NewWithRetry(client, providers.DefaultRetryPolicy())
+}
+
+func NewWithRetry(client client, retry providers.RetryPolicy) *Adapter {
+	return &Adapter{client: client, retry: retry}
+}
 
 func NewFromEnv() (*Adapter, error) {
 	return NewFromCredentials(os.Getenv("GITLAB_BOT_TOKEN"), os.Getenv("GITLAB_API_URL"))
@@ -87,7 +88,12 @@ func (a *Adapter) ValidateFixture(ctx context.Context, fixture providers.Fixture
 	if fixture.Owner+"/"+fixture.Name != canonicalProject || (fixture.URL != "" && fixture.URL != CanonicalFixtureURL) {
 		return providers.FixtureRepository{}, fmt.Errorf("gitlab fixture must be %s", CanonicalFixtureURL)
 	}
-	project, err := a.client.GetProject(canonicalProject)
+	var project *gl.Project
+	err := providers.RetryOn5xx(ctx, a.retry, func() error {
+		var err error
+		project, err = a.client.GetProject(canonicalProject)
+		return err
+	}, isGitLab5xx)
 	if err != nil {
 		return providers.FixtureRepository{}, fmt.Errorf("validate gitlab fixture: %w", err)
 	}
@@ -97,21 +103,35 @@ func (a *Adapter) ValidateFixture(ctx context.Context, fixture providers.Fixture
 	return providers.FixtureRepository{Owner: "konflux-qe", Name: "dr_test_mathwizz_gl", URL: CanonicalFixtureURL}, nil
 }
 
-func (a *Adapter) ReadFile(_ context.Context, fixture providers.FixtureRepository, path, branch string) (providers.FileVersion, error) {
+func (a *Adapter) ReadFile(ctx context.Context, fixture providers.FixtureRepository, path, branch string) (providers.FileVersion, error) {
 	project := fixture.Owner + "/" + fixture.Name
-	metadata, err := a.client.GetFileMetaData(project, path, branch)
+	var metadata *gl.File
+	err := providers.RetryOn5xx(ctx, a.retry, func() error {
+		var err error
+		metadata, err = a.client.GetFileMetaData(project, path, branch)
+		return err
+	}, isGitLab5xx)
 	if err != nil {
 		return providers.FileVersion{}, err
 	}
-	content, err := a.client.GetFile(project, path, branch)
+	var content string
+	err = providers.RetryOn5xx(ctx, a.retry, func() error {
+		var err error
+		content, err = a.client.GetFile(project, path, branch)
+		return err
+	}, isGitLab5xx)
 	if err != nil {
 		return providers.FileVersion{}, err
+	}
+	decoded, err := base64.StdEncoding.DecodeString(content)
+	if err != nil {
+		return providers.FileVersion{}, fmt.Errorf("decode GitLab file %s: %w", path, err)
 	}
 	sha := metadata.CommitID
 	if sha == "" {
 		sha = metadata.LastCommitID
 	}
-	return providers.FileVersion{Path: path, Branch: branch, Content: content, SHA: sha, URL: metadata.FilePath}, nil
+	return providers.FileVersion{Path: path, Branch: branch, Content: string(decoded), SHA: sha, URL: metadata.FilePath}, nil
 }
 
 func (a *Adapter) UpdateFile(ctx context.Context, fixture providers.FixtureRepository, path, branch, content, expectedSHA string) (providers.Commit, error) {
@@ -123,9 +143,29 @@ func (a *Adapter) UpdateFile(ctx context.Context, fixture providers.FixtureRepos
 		return providers.Commit{}, err
 	}
 	project := fixture.Owner + "/" + fixture.Name
-	sha, err := a.client.UpdateFile(project, path, content, branch, expectedSHA, "konflux-test trigger")
+	err = providers.RetryOn5xx(ctx, a.retry, func() error {
+		return a.client.UpdateFile(project, path, content, branch, expectedSHA, "konflux-test trigger")
+	}, isGitLab5xx)
 	if err != nil {
 		return providers.Commit{}, err
 	}
+	var metadata *gl.File
+	err = providers.RetryOn5xx(ctx, a.retry, func() error {
+		var err error
+		metadata, err = a.client.GetFileMetaData(project, path, branch)
+		return err
+	}, isGitLab5xx)
+	if err != nil {
+		return providers.Commit{}, err
+	}
+	sha := metadata.CommitID
+	if sha == "" {
+		sha = metadata.LastCommitID
+	}
 	return providers.Commit{SHA: sha, Message: "konflux-test trigger", CreatedAt: time.Now().UTC()}, nil
+}
+
+func isGitLab5xx(err error) bool {
+	var response *gl.ErrorResponse
+	return errors.As(err, &response) && response.Response != nil && response.Response.StatusCode >= 500 && response.Response.StatusCode <= 599
 }
