@@ -98,6 +98,9 @@ func namespaceObject(name, runID string) *unstructured.Unstructured {
 }
 
 func writeLifecycleArtifact(path string) error {
+	if filepath.Ext(path) == "" {
+		return os.MkdirAll(path, 0o750)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}

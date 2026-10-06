@@ -19,6 +19,48 @@ import (
 )
 
 var _ = ginkgo.Describe("Kubernetes sources", func() {
+	ginkgo.It("writes one redacted YAML snapshot per TaskRun", func() {
+		object := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "tekton.dev/v1",
+			"kind":       "TaskRun",
+			"metadata": map[string]any{
+				"name":      "build-run",
+				"namespace": "tenant",
+				"annotations": map[string]any{
+					"secret-token": "secret-value",
+				},
+			},
+			"spec": map[string]any{
+				"params": []any{map[string]any{
+					"name":  "PARAM_PLATFORM",
+					"value": "",
+				}},
+			},
+		}}
+		client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{collectorTaskRunGVR(): "TaskRunList"})
+		if _, err := client.Resource(collectorTaskRunGVR()).Namespace("tenant").Create(context.Background(), object, metav1.CreateOptions{}); err != nil {
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		root := ginkgo.GinkgoT().TempDir()
+		var source Source
+		for _, candidate := range KubernetesSources(client, "tenant", "run-1") {
+			if candidate.Name == "taskrun-yaml" {
+				source = candidate
+			}
+		}
+		Expect(source.Collect).NotTo(BeNil())
+		Expect(source.Collect(context.Background(), root)).To(Succeed())
+
+		data, err := os.ReadFile(filepath.Join(root, "workload", "taskruns", "tenant--build-run.yaml"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(data)).To(ContainSubstring("name: PARAM_PLATFORM"))
+		Expect(string(data)).To(ContainSubstring("value: \"\""))
+		Expect(string(data)).To(ContainSubstring("name: build-run"))
+		Expect(string(data)).To(ContainSubstring("secret-token: '[REDACTED]'"))
+		Expect(string(data)).NotTo(ContainSubstring("secret-value"))
+	})
+
 	ginkgo.It("write redacted snapshots", func() {
 		object := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Pod", "metadata": map[string]any{"name": "pod", "namespace": "tenant", "password": "secret-value"}}}
 		client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{{Version: "v1", Resource: "pods"}: "PodList"})
@@ -65,3 +107,7 @@ var _ = ginkgo.Describe("Kubernetes sources", func() {
 		Expect(string(data)).To(ContainSubstring("build output"))
 	})
 })
+
+func collectorTaskRunGVR() schema.GroupVersionResource {
+	return schema.GroupVersionResource{Group: "tekton.dev", Version: "v1", Resource: "taskruns"}
+}

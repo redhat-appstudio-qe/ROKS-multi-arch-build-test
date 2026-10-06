@@ -9,11 +9,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/redhat-appstudio/konflux-test/internal/evidence"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"sigs.k8s.io/yaml"
 )
 
 type resourceSource struct {
@@ -30,6 +33,7 @@ func KubernetesSources(client dynamic.Interface, namespace, _ string) []Source {
 		{name: "components", gvr: schema.GroupVersionResource{Group: "appstudio.redhat.com", Version: "v1alpha1", Resource: "components"}, namespace: namespace, path: "workload/components.json"},
 		{name: "pipelineruns", gvr: schema.GroupVersionResource{Group: "tekton.dev", Version: "v1", Resource: "pipelineruns"}, namespace: namespace, path: "workload/pipelineruns.json"},
 		{name: "taskruns", gvr: schema.GroupVersionResource{Group: "tekton.dev", Version: "v1", Resource: "taskruns"}, namespace: namespace, path: "workload/taskruns.json"},
+		{name: "taskrun-yaml", gvr: schema.GroupVersionResource{Group: "tekton.dev", Version: "v1", Resource: "taskruns"}, namespace: namespace, path: "workload/taskruns/"},
 		{name: "pods", gvr: schema.GroupVersionResource{Version: "v1", Resource: "pods"}, namespace: namespace, path: "workload/pods.json"},
 	}
 	sources := make([]Source, 0, len(resources))
@@ -43,10 +47,35 @@ func KubernetesSources(client dynamic.Interface, namespace, _ string) []Source {
 			if err != nil {
 				return err
 			}
+			if resource.name == "taskrun-yaml" {
+				return writeTaskRunYAMLs(filepath.Join(root, resource.path), resource.namespace, objects.Items)
+			}
 			return writeJSON(filepath.Join(root, resource.path), objects)
 		}})
 	}
 	return sources
+}
+
+func writeTaskRunYAMLs(directory, namespace string, taskRuns []unstructured.Unstructured) error {
+	if err := os.MkdirAll(directory, 0o750); err != nil {
+		return err
+	}
+	for index := range taskRuns {
+		data, err := evidence.RedactedJSON(&taskRuns[index])
+		if err != nil {
+			return fmt.Errorf("redact TaskRun %s/%s: %w", namespace, taskRuns[index].GetName(), err)
+		}
+		data, err = yaml.JSONToYAML(data)
+		if err != nil {
+			return fmt.Errorf("serialize TaskRun %s/%s as YAML: %w", namespace, taskRuns[index].GetName(), err)
+		}
+		data = append(data, '\n')
+		path := filepath.Join(directory, safePathPart(namespace+"--"+taskRuns[index].GetName())+".yaml")
+		if err := os.WriteFile(path, data, 0o640); err != nil {
+			return fmt.Errorf("write TaskRun %s/%s YAML: %w", namespace, taskRuns[index].GetName(), err)
+		}
+	}
+	return nil
 }
 
 var DefaultLogNamespaces = []string{

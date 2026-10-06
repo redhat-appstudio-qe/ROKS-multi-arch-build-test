@@ -20,8 +20,8 @@ var _ = ginkgo.Describe("Collector", func() {
 			Expect(err).NotTo(HaveOccurred())
 		}
 		Expect(report.ArtifactPath).To(Equal(filepath.Join(root, "run-1")))
-		Expect(report.RequiredArtifactNames).To(HaveLen(7))
-		Expect(report.SavedArtifactNames).To(HaveLen(7))
+		Expect(report.RequiredArtifactNames).To(HaveLen(8))
+		Expect(report.SavedArtifactNames).To(HaveLen(8))
 		Expect(report.VerifiedAt).NotTo(BeZero())
 	})
 
@@ -69,18 +69,21 @@ var _ = ginkgo.Describe("Collector", func() {
 		if err != nil {
 			Expect(err).NotTo(HaveOccurred())
 		}
-		Expect(report.RequiredArtifactNames).To(HaveLen(8))
-		Expect(report.SavedArtifactNames).To(HaveLen(8))
+		Expect(report.RequiredArtifactNames).To(HaveLen(9))
+		Expect(report.SavedArtifactNames).To(HaveLen(9))
 	})
 })
 
 func requiredTestSources() []Source {
-	paths := []string{"workload/applications.json", "workload/components.json", "workload/pipelineruns.json", "workload/taskruns.json", "workload/pods.json"}
+	paths := []string{"workload/applications.json", "workload/components.json", "workload/pipelineruns.json", "workload/taskruns.json", "workload/taskruns/", "workload/pods.json"}
 	sources := make([]Source, 0, len(paths))
 	for index, path := range paths {
 		path := path
 		index := index
 		sources = append(sources, Source{Name: filepath.Base(path), Path: path, Collect: func(_ context.Context, root string) error {
+			if filepath.Ext(path) == "" {
+				return os.MkdirAll(filepath.Join(root, path), 0o750)
+			}
 			return writeJSON(filepath.Join(root, path), map[string]any{"index": index})
 		}})
 	}
