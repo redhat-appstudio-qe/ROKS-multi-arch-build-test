@@ -11,7 +11,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
 )
 
 var (
@@ -20,17 +19,13 @@ var (
 )
 
 type BuildOutputInspector struct {
-	Dynamic    dynamic.Interface
-	Kubernetes kubernetes.Interface
-	Now        func() time.Time
+	Dynamic dynamic.Interface
+	Now     func() time.Time
 }
 
 func (i BuildOutputInspector) Verify(ctx context.Context, identities []model.PipelineRunIdentity) ([]model.BuildOutputEvidence, error) {
 	if i.Dynamic == nil {
 		return nil, fmt.Errorf("dynamic client is required")
-	}
-	if i.Kubernetes == nil {
-		return nil, fmt.Errorf("kubernetes client is required for Pod and Node build evidence")
 	}
 	if len(identities) == 0 {
 		return nil, fmt.Errorf("at least one PipelineRun is required")
@@ -85,21 +80,15 @@ func (i BuildOutputInspector) verifyPipelineRun(ctx context.Context, identity mo
 		if conditionStatus(taskRun) != "True" {
 			continue
 		}
-		if !isBuildTaskRun(taskRun) {
+		if !IsBuildTaskRun(taskRun) {
 			continue
 		}
 		platform, output, digest := taskRunOutput(taskRun)
 		if output == "" || digest == "" {
 			return model.BuildOutputEvidence{}, fmt.Errorf("build TaskRun %s/%s is missing IMAGE_URL or IMAGE_DIGEST", taskRun.GetNamespace(), taskRun.GetName())
 		}
-		if i.Kubernetes != nil || platform == "" {
-			platform, err = i.taskRunPodPlatform(ctx, taskRun)
-			if err != nil {
-				return model.BuildOutputEvidence{}, err
-			}
-		}
 		if platform == "" {
-			return model.BuildOutputEvidence{}, fmt.Errorf("build TaskRun %s/%s output has no platform evidence", taskRun.GetNamespace(), taskRun.GetName())
+			return model.BuildOutputEvidence{}, fmt.Errorf("build TaskRun %s/%s has no platform label — pipeline misconfiguration", taskRun.GetNamespace(), taskRun.GetName())
 		}
 		createdOutputs[platform] = output
 		outputDigests[platform] = digest
@@ -151,7 +140,7 @@ func conditionStatus(object *unstructured.Unstructured) string {
 	return "Unknown"
 }
 
-func isBuildTaskRun(taskRun *unstructured.Unstructured) bool {
+func IsBuildTaskRun(taskRun *unstructured.Unstructured) bool {
 	labels := taskRun.GetLabels()
 	if labels["tekton.dev/pipelineTask"] != "build-container" {
 		return false
@@ -227,54 +216,6 @@ func taskRunPlatform(taskRun *unstructured.Unstructured) string {
 		}
 	}
 	return ""
-}
-
-func (i BuildOutputInspector) taskRunPodPlatform(ctx context.Context, taskRun *unstructured.Unstructured) (string, error) {
-	if i.Kubernetes == nil {
-		if platform := taskRunPlatform(taskRun); platform != "" {
-			return platform, nil
-		}
-		return taskRunPodTemplatePlatform(taskRun), nil
-	}
-	podName, _, _ := unstructured.NestedString(taskRun.Object, "status", "podName")
-	if strings.TrimSpace(podName) == "" {
-		return "", nil
-	}
-	pod, err := i.Kubernetes.CoreV1().Pods(taskRun.GetNamespace()).Get(ctx, podName, metav1.GetOptions{})
-	if err != nil {
-		return "", fmt.Errorf("get build TaskRun pod %s/%s: %w", taskRun.GetNamespace(), podName, err)
-	}
-	if strings.TrimSpace(pod.Spec.NodeName) == "" {
-		return "", nil
-	}
-	node, err := i.Kubernetes.CoreV1().Nodes().Get(ctx, pod.Spec.NodeName, metav1.GetOptions{})
-	if err != nil {
-		return "", fmt.Errorf("get build TaskRun node %s: %w", pod.Spec.NodeName, err)
-	}
-	architecture := node.Labels["kubernetes.io/arch"]
-	if architecture == "" {
-		architecture = node.Status.NodeInfo.Architecture
-	}
-	return platformFromArchitecture(architecture), nil
-}
-
-func taskRunPodTemplatePlatform(taskRun *unstructured.Unstructured) string {
-	nodeSelector, _, _ := unstructured.NestedStringMap(taskRun.Object, "spec", "podTemplate", "nodeSelector")
-	return platformFromArchitecture(nodeSelector["kubernetes.io/arch"])
-}
-
-func platformFromArchitecture(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	switch value {
-	case "linux/amd64", "linux/arm64":
-		return value
-	case "amd64":
-		return "linux/amd64"
-	case "arm64":
-		return "linux/arm64"
-	default:
-		return ""
-	}
 }
 
 func isBuildPlatform(value string) bool {

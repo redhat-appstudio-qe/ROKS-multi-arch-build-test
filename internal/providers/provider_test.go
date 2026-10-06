@@ -1,29 +1,25 @@
 package providers
 
-import "testing"
+import (
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
 
-func TestParseRepository(t *testing.T) {
-	got, err := ParseRepository("https://gitlab.com/konflux-qe/dr_test_mathwizz_gl.git")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Owner != "konflux-qe" || got.Name != "dr_test_mathwizz_gl" {
-		t.Fatalf("unexpected repository: %#v", got)
-	}
-}
+var _ = Describe("repository helpers", func() {
+	It("parses a repository", func() {
+		got, err := ParseRepository("https://gitlab.com/konflux-qe/dr_test_mathwizz_gl.git")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got.Owner).To(Equal("konflux-qe"))
+		Expect(got.Name).To(Equal("dr_test_mathwizz_gl"))
+	})
 
-func TestValidateExpectedSHARejectsStaleVersion(t *testing.T) {
-	if err := ValidateExpectedSHA("old", "new"); err == nil {
-		t.Fatal("expected stale-version error")
-	}
-}
+	It("rejects a stale expected SHA", func() {
+		Expect(ValidateExpectedSHA("old", "new")).To(HaveOccurred())
+	})
 
-func TestParseRepositoryURLForTest(t *testing.T) {
-	got, err := ParseRepository("https://gitlab.com/konflux-qe/dr_test_mathwizz_gl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.URL != "https://gitlab.com/konflux-qe/dr_test_mathwizz_gl" {
-		t.Fatalf("url = %q", got.URL)
-	}
-}
+	It("parses repository URL without a suffix", func() {
+		got, err := ParseRepository("https://gitlab.com/konflux-qe/dr_test_mathwizz_gl")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got.URL).To(Equal("https://gitlab.com/konflux-qe/dr_test_mathwizz_gl"))
+	})
+})

@@ -170,6 +170,7 @@ func (s NamespaceService) Delete(ctx context.Context, name, runID string) error 
 	if info.Labels[ManagedByLabel] != ManagedByValue || info.RunID != runID {
 		return fmt.Errorf("refusing to delete namespace %q without exact konflux-test ownership labels", name)
 	}
+	_, _ = StripAllFinalizers(ctx, s.Dynamic, name)
 	if err := s.Dynamic.Resource(NamespaceGVR).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("delete namespace %s: %w", name, err)
 	}

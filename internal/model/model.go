@@ -89,6 +89,16 @@ type BuildOutputEvidence struct {
 	VerifiedAt     time.Time           `json:"verifiedAt"`
 }
 
+type FailedBuildLog struct {
+	PipelineRunName  string `json:"pipelineRunName"`
+	TaskRunName      string `json:"taskRunName"`
+	TaskName         string `json:"taskName"`
+	StepContainer    string `json:"stepContainer"`
+	ExitCode         int64  `json:"exitCode"`
+	ConditionMessage string `json:"conditionMessage"`
+	LogPath          string `json:"logPath,omitempty"`
+}
+
 type Failure struct {
 	Phase   Phase  `json:"phase"`
 	Reason  string `json:"reason"`
@@ -115,6 +125,7 @@ type RunManifest struct {
 	TriggerCommits      []TriggerCommit        `json:"triggerCommits,omitempty"`
 	PipelineRuns        []PipelineRunIdentity  `json:"pipelineRuns,omitempty"`
 	BuildOutputs        []BuildOutputEvidence  `json:"buildOutputs,omitempty"`
+	FailedBuildLogs     []FailedBuildLog       `json:"failedBuildLogs,omitempty"`
 	Failure             *Failure               `json:"failure,omitempty"`
 	FailureArtifacts    *FailureArtifactReport `json:"failureArtifacts,omitempty"`
 }

@@ -2,10 +2,10 @@ package workflow
 
 import (
 	"context"
-	"strings"
-	"testing"
 	"time"
 
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"github.com/redhat-appstudio/konflux-test/internal/evidence"
 	"github.com/redhat-appstudio/konflux-test/internal/model"
 )
@@ -45,103 +45,59 @@ func (s *fakeStage) VerifyBuildOutputs(ctx context.Context, _ *model.RunManifest
 	return s.call(ctx, "build-outputs")
 }
 
-func TestRunnerPersistsSuccessfulPhaseSequence(t *testing.T) {
-	stage := &fakeStage{}
-	runner := Runner{Store: evidence.NewManifestStore(t.TempDir()), Stage: stage, Now: func() time.Time { return time.Unix(100, 0) }}
-	manifest, err := runner.Run(context.Background(), Options{RunID: "run-1", Provider: "github", ClusterServer: "https://api.example", FixtureNamespace: "tenant", Application: "app"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if manifest.Phase != model.PhaseCompleted || len(stage.calls) != 5 {
-		t.Fatalf("phase=%q calls=%v", manifest.Phase, stage.calls)
-	}
-	want := []string{"preflight", "fixture", "trigger", "builds", "build-outputs"}
-	for index, call := range want {
-		if stage.calls[index] != call {
-			t.Fatalf("calls=%v, want %v", stage.calls, want)
-		}
-	}
-}
-
-func TestRunnerPersistsFailure(t *testing.T) {
-	stage := &fakeStage{fail: "build-outputs"}
-	runner := Runner{Store: evidence.NewManifestStore(t.TempDir()), Stage: stage}
-	manifest, err := runner.Run(context.Background(), Options{RunID: "run-2", Provider: "github", ClusterServer: "https://api.example"})
-	if err == nil || manifest.Phase != model.PhaseFailed || manifest.Failure == nil {
-		t.Fatalf("manifest=%#v err=%v", manifest, err)
-	}
-}
-
-func TestRunnerAppliesPhaseTimeouts(t *testing.T) {
-	stage := &fakeStage{}
-	runner := Runner{Store: evidence.NewManifestStore(t.TempDir()), Stage: stage}
-	_, err := runner.Run(context.Background(), Options{
-		RunID:         "run-timeout",
-		Provider:      "github",
-		ClusterServer: "https://api.example",
-		Timeouts:      PhaseTimeouts{Preflight: time.Minute},
+var _ = Describe("Runner", func() {
+	It("persists successful phase sequence", func() {
+		stage := &fakeStage{}
+		runner := Runner{Store: evidence.NewManifestStore(GinkgoT().TempDir()), Stage: stage, Now: func() time.Time { return time.Unix(100, 0) }}
+		manifest, err := runner.Run(context.Background(), Options{RunID: "run-1", Provider: "github", ClusterServer: "https://api.example", FixtureNamespace: "tenant", Application: "app"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(manifest.Phase).To(Equal(model.PhaseCompleted))
+		Expect(stage.calls).To(Equal([]string{"preflight", "fixture", "trigger", "builds", "build-outputs"}))
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !stage.deadlines["preflight"] {
-		t.Fatalf("preflight context had no deadline: %#v", stage.deadlines)
-	}
-}
 
-func TestRunnerRejectsResumeFromFailedRun(t *testing.T) {
-	store := evidence.NewManifestStore(t.TempDir())
-	failedStage := &fakeStage{fail: "build-outputs"}
-	runner := Runner{Store: store, Stage: failedStage}
-	_, _ = runner.Run(context.Background(), Options{RunID: "run-failed", Provider: "github", ClusterServer: "https://api.example", FixtureNamespace: "tenant"})
-
-	resumed, err := (Runner{Store: store, Stage: &fakeStage{}}).Run(context.Background(), Options{
-		RunID:            "run-failed",
-		Provider:         "github",
-		ClusterServer:    "https://api.example",
-		FixtureNamespace: "tenant",
-		Resume:           true,
+	It("persists failure", func() {
+		stage := &fakeStage{fail: "build-outputs"}
+		runner := Runner{Store: evidence.NewManifestStore(GinkgoT().TempDir()), Stage: stage}
+		manifest, err := runner.Run(context.Background(), Options{RunID: "run-2", Provider: "github", ClusterServer: "https://api.example"})
+		Expect(err).To(HaveOccurred())
+		Expect(manifest.Phase).To(Equal(model.PhaseFailed))
+		Expect(manifest.Failure).NotTo(BeNil())
 	})
-	if err == nil || !strings.Contains(err.Error(), "failed run") || resumed.Phase != model.PhaseFailed {
-		t.Fatalf("manifest=%#v err=%v, want failed resume rejection", resumed, err)
-	}
-}
 
-func TestRunnerRejectsResumeWithDifferentTenant(t *testing.T) {
-	store := evidence.NewManifestStore(t.TempDir())
-	runner := Runner{Store: store, Stage: &fakeStage{}}
-	_, err := runner.Run(context.Background(), Options{RunID: "run-tenant", Provider: "github", ClusterServer: "https://api.example", FixtureNamespace: "tenant-a"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	resumed, err := (Runner{Store: store, Stage: &fakeStage{}}).Run(context.Background(), Options{
-		RunID:            "run-tenant",
-		Provider:         "github",
-		ClusterServer:    "https://api.example",
-		FixtureNamespace: "tenant-b",
-		Resume:           true,
+	It("applies phase timeouts", func() {
+		stage := &fakeStage{}
+		runner := Runner{Store: evidence.NewManifestStore(GinkgoT().TempDir()), Stage: stage}
+		_, err := runner.Run(context.Background(), Options{RunID: "run-timeout", Provider: "github", ClusterServer: "https://api.example", Timeouts: PhaseTimeouts{Preflight: time.Minute}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(stage.deadlines["preflight"]).To(BeTrue())
 	})
-	if err == nil || !strings.Contains(err.Error(), "resume ownership mismatch") || resumed.Fixture.TenantNamespace != "tenant-a" {
-		t.Fatalf("manifest=%#v err=%v, want tenant ownership rejection", resumed, err)
-	}
-}
 
-func TestRunnerRejectsResumeWithoutTenant(t *testing.T) {
-	store := evidence.NewManifestStore(t.TempDir())
-	runner := Runner{Store: store, Stage: &fakeStage{}}
-	_, err := runner.Run(context.Background(), Options{RunID: "run-tenant-empty", Provider: "github", ClusterServer: "https://api.example", FixtureNamespace: "tenant-a"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	resumed, err := (Runner{Store: store, Stage: &fakeStage{}}).Run(context.Background(), Options{
-		RunID:         "run-tenant-empty",
-		Provider:      "github",
-		ClusterServer: "https://api.example",
-		Resume:        true,
+	It("rejects resume from failed run", func() {
+		store := evidence.NewManifestStore(GinkgoT().TempDir())
+		failedStage := &fakeStage{fail: "build-outputs"}
+		_, _ = (Runner{Store: store, Stage: failedStage}).Run(context.Background(), Options{RunID: "run-failed", Provider: "github", ClusterServer: "https://api.example", FixtureNamespace: "tenant"})
+		resumed, err := (Runner{Store: store, Stage: &fakeStage{}}).Run(context.Background(), Options{RunID: "run-failed", Provider: "github", ClusterServer: "https://api.example", FixtureNamespace: "tenant", Resume: true})
+		Expect(err).To(MatchError(ContainSubstring("failed run")))
+		Expect(resumed.Phase).To(Equal(model.PhaseFailed))
 	})
-	if err == nil || !strings.Contains(err.Error(), "resume ownership mismatch") || resumed.Fixture.TenantNamespace != "tenant-a" {
-		t.Fatalf("manifest=%#v err=%v, want missing tenant rejection", resumed, err)
-	}
-}
+
+	It("rejects resume with different tenant", func() {
+		store := evidence.NewManifestStore(GinkgoT().TempDir())
+		runner := Runner{Store: store, Stage: &fakeStage{}}
+		_, err := runner.Run(context.Background(), Options{RunID: "run-tenant", Provider: "github", ClusterServer: "https://api.example", FixtureNamespace: "tenant-a"})
+		Expect(err).NotTo(HaveOccurred())
+		resumed, err := (Runner{Store: store, Stage: &fakeStage{}}).Run(context.Background(), Options{RunID: "run-tenant", Provider: "github", ClusterServer: "https://api.example", FixtureNamespace: "tenant-b", Resume: true})
+		Expect(err).To(MatchError(ContainSubstring("resume ownership mismatch")))
+		Expect(resumed.Fixture.TenantNamespace).To(Equal("tenant-a"))
+	})
+
+	It("rejects resume without tenant", func() {
+		store := evidence.NewManifestStore(GinkgoT().TempDir())
+		runner := Runner{Store: store, Stage: &fakeStage{}}
+		_, err := runner.Run(context.Background(), Options{RunID: "run-tenant-empty", Provider: "github", ClusterServer: "https://api.example", FixtureNamespace: "tenant-a"})
+		Expect(err).NotTo(HaveOccurred())
+		resumed, err := (Runner{Store: store, Stage: &fakeStage{}}).Run(context.Background(), Options{RunID: "run-tenant-empty", Provider: "github", ClusterServer: "https://api.example", Resume: true})
+		Expect(err).To(MatchError(ContainSubstring("resume ownership mismatch")))
+		Expect(resumed.Fixture.TenantNamespace).To(Equal("tenant-a"))
+	})
+})

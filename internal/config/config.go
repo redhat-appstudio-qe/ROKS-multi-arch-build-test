@@ -35,6 +35,7 @@ type Credentials struct {
 
 type Timeouts struct {
 	Preflight time.Duration
+	Trigger   time.Duration
 	Build     time.Duration
 }
 
@@ -64,6 +65,7 @@ func Defaults() Request {
 		ComponentPaths:   append([]string(nil), DefaultComponentPaths...),
 		Timeouts: Timeouts{
 			Preflight: 10 * time.Minute,
+			Trigger:   5 * time.Minute,
 			Build:     60 * time.Minute,
 		},
 	}
@@ -106,6 +108,7 @@ func Parse(args []string) (Request, error) {
 	var envFile string
 	fs.StringVar(&envFile, "env-file", "", "dotenv file containing provider credentials")
 	fs.DurationVar(&req.Timeouts.Preflight, "preflight-timeout", req.Timeouts.Preflight, "preflight timeout")
+	fs.DurationVar(&req.Timeouts.Trigger, "trigger-timeout", req.Timeouts.Trigger, "PipelineRun trigger window")
 	fs.DurationVar(&req.Timeouts.Build, "build-timeout", req.Timeouts.Build, "build timeout")
 	fs.StringVar(&req.ResumeRunID, "resume", "", "resume an existing run ID")
 	if err := fs.Parse(remaining); err != nil {
@@ -203,7 +206,7 @@ func (r Request) Validate() error {
 		name  string
 		value time.Duration
 	}{
-		{"preflight", r.Timeouts.Preflight}, {"build", r.Timeouts.Build},
+		{"preflight", r.Timeouts.Preflight}, {"trigger", r.Timeouts.Trigger}, {"build", r.Timeouts.Build},
 	} {
 		if timeout.value <= 0 {
 			return fmt.Errorf("%s timeout must be positive", timeout.name)
