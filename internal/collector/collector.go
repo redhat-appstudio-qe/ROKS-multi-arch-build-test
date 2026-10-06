@@ -19,6 +19,7 @@ var requiredArtifactNames = []string{
 	"workload/components.json",
 	"workload/pipelineruns.json",
 	"workload/taskruns.json",
+	"workload/taskruns/",
 	"workload/pods.json",
 	"collection-report.json",
 }
