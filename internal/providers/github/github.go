@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -47,9 +48,18 @@ func (c apiClient) UpdateFile(owner, name, path, content, branch, sha string) (*
 	return response, err
 }
 
-type Adapter struct{ client client }
+type Adapter struct {
+	client client
+	retry  providers.RetryPolicy
+}
 
-func New(client client) *Adapter { return &Adapter{client: client} }
+func New(client client) *Adapter {
+	return NewWithRetry(client, providers.DefaultRetryPolicy())
+}
+
+func NewWithRetry(client client, retry providers.RetryPolicy) *Adapter {
+	return &Adapter{client: client, retry: retry}
+}
 
 func NewFromEnv() (*Adapter, error) { return NewFromCredentials(os.Getenv("GITHUB_TOKEN")) }
 
@@ -67,7 +77,12 @@ func (a *Adapter) ValidateFixture(ctx context.Context, fixture providers.Fixture
 	if fixture.Owner != canonicalOwner || fixture.Name != canonicalName || (fixture.URL != "" && fixture.URL != CanonicalFixtureURL) {
 		return providers.FixtureRepository{}, fmt.Errorf("github fixture must be %s", CanonicalFixtureURL)
 	}
-	repository, err := a.client.GetRepository(canonicalOwner, canonicalName)
+	var repository *gh.Repository
+	err := providers.RetryOn5xx(ctx, a.retry, func() error {
+		var err error
+		repository, err = a.client.GetRepository(canonicalOwner, canonicalName)
+		return err
+	}, isGitHub5xx)
 	if err != nil {
 		return providers.FixtureRepository{}, fmt.Errorf("validate github fixture: %w", err)
 	}
@@ -77,8 +92,13 @@ func (a *Adapter) ValidateFixture(ctx context.Context, fixture providers.Fixture
 	return providers.FixtureRepository{Owner: canonicalOwner, Name: canonicalName, URL: CanonicalFixtureURL}, nil
 }
 
-func (a *Adapter) ReadFile(_ context.Context, fixture providers.FixtureRepository, path, branch string) (providers.FileVersion, error) {
-	file, err := a.client.GetFile(fixture.Owner, fixture.Name, path, branch)
+func (a *Adapter) ReadFile(ctx context.Context, fixture providers.FixtureRepository, path, branch string) (providers.FileVersion, error) {
+	var file *gh.RepositoryContent
+	err := providers.RetryOn5xx(ctx, a.retry, func() error {
+		var err error
+		file, err = a.client.GetFile(fixture.Owner, fixture.Name, path, branch)
+		return err
+	}, isGitHub5xx)
 	if err != nil {
 		return providers.FileVersion{}, err
 	}
@@ -97,9 +117,19 @@ func (a *Adapter) UpdateFile(ctx context.Context, fixture providers.FixtureRepos
 	if err := providers.ValidateExpectedSHA(expectedSHA, current.SHA); err != nil {
 		return providers.Commit{}, err
 	}
-	updated, err := a.client.UpdateFile(fixture.Owner, fixture.Name, path, content, branch, expectedSHA)
+	var updated *gh.RepositoryContentResponse
+	err = providers.RetryOn5xx(ctx, a.retry, func() error {
+		var err error
+		updated, err = a.client.UpdateFile(fixture.Owner, fixture.Name, path, content, branch, expectedSHA)
+		return err
+	}, isGitHub5xx)
 	if err != nil {
 		return providers.Commit{}, err
 	}
 	return providers.Commit{SHA: updated.Commit.GetSHA(), URL: updated.Commit.GetHTMLURL(), Message: "konflux-test trigger", CreatedAt: time.Now().UTC()}, nil
+}
+
+func isGitHub5xx(err error) bool {
+	var response *gh.ErrorResponse
+	return errors.As(err, &response) && response.Response != nil && response.Response.StatusCode >= 500 && response.Response.StatusCode <= 599
 }

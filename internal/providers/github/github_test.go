@@ -3,6 +3,8 @@ package github
 import (
 	"context"
 	"errors"
+	"net/http"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -12,13 +14,20 @@ import (
 )
 
 type fakeClient struct {
-	repository  *gh.Repository
-	getCalls    int
-	updateCalls int
+	repository          *gh.Repository
+	getRepositoryErrors []error
+	updateErrors        []error
+	getCalls            int
+	updateCalls         int
 }
 
 func (f *fakeClient) GetRepository(string, string) (*gh.Repository, error) {
 	f.getCalls++
+	if len(f.getRepositoryErrors) > 0 {
+		err := f.getRepositoryErrors[0]
+		f.getRepositoryErrors = f.getRepositoryErrors[1:]
+		return nil, err
+	}
 	if f.repository == nil {
 		return nil, errors.New("not found")
 	}
@@ -31,6 +40,11 @@ func (f *fakeClient) GetFile(string, string, string, string) (*gh.RepositoryCont
 
 func (f *fakeClient) UpdateFile(string, string, string, string, string, string) (*gh.RepositoryContentResponse, error) {
 	f.updateCalls++
+	if len(f.updateErrors) > 0 {
+		err := f.updateErrors[0]
+		f.updateErrors = f.updateErrors[1:]
+		return nil, err
+	}
 	return &gh.RepositoryContentResponse{Commit: gh.Commit{SHA: gh.String("commit-1")}}, nil
 }
 
@@ -44,6 +58,18 @@ var _ = Describe("GitHub provider", func() {
 		want := providers.FixtureRepository{Owner: "redhat-appstudio-qe", Name: "dr_test_mathwizz", URL: CanonicalFixtureURL}
 		Expect(got).To(Equal(want))
 		Expect(client.getCalls).To(Equal(1))
+	})
+
+	It("retries repository validation after a 5xx response", func() {
+		client := &fakeClient{
+			repository:          &gh.Repository{Name: gh.String("dr_test_mathwizz"), Owner: &gh.User{Login: gh.String("redhat-appstudio-qe")}},
+			getRepositoryErrors: []error{&gh.ErrorResponse{Response: &http.Response{StatusCode: http.StatusBadGateway}}},
+		}
+		adapter := NewWithRetry(client, providers.RetryPolicy{MaxRetries: 3, Sleep: func(context.Context, time.Duration) error { return nil }})
+
+		_, err := adapter.ValidateFixture(context.Background(), providers.FixtureRepository{Owner: "redhat-appstudio-qe", Name: "dr_test_mathwizz"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(client.getCalls).To(Equal(2))
 	})
 
 	It("rejects non-canonical repository without creation", func() {
@@ -64,5 +90,17 @@ var _ = Describe("GitHub provider", func() {
 		_, err = adapter.UpdateFile(context.Background(), fixture, "web-server/Dockerfile", "main", "content", "sha-1")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(client.updateCalls).To(Equal(1))
+	})
+
+	It("retries file updates after a 5xx response", func() {
+		client := &fakeClient{
+			updateErrors: []error{&gh.ErrorResponse{Response: &http.Response{StatusCode: http.StatusBadGateway}}},
+		}
+		adapter := NewWithRetry(client, providers.RetryPolicy{MaxRetries: 3, Sleep: func(context.Context, time.Duration) error { return nil }})
+		fixture := providers.FixtureRepository{Owner: "redhat-appstudio-qe", Name: "dr_test_mathwizz", URL: CanonicalFixtureURL}
+
+		_, err := adapter.UpdateFile(context.Background(), fixture, "web-server/Dockerfile", "main", "content", "sha-1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(client.updateCalls).To(Equal(2))
 	})
 })
