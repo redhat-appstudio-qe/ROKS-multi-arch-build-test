@@ -1,22 +1,19 @@
 package cluster
 
 import (
-	"testing"
 	"time"
 
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"k8s.io/client-go/rest"
 )
 
-func TestNewClientSetFromConfigBoundsDefaultHTTPRequests(t *testing.T) {
-	config := &rest.Config{Host: "https://api.example"}
-	clients, err := NewClientSetFromConfig(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if clients.Config.Timeout != 20*time.Second {
-		t.Fatalf("timeout = %s, want 20s", clients.Config.Timeout)
-	}
-	if config.Timeout != 0 {
-		t.Fatalf("input config was mutated: timeout = %s", config.Timeout)
-	}
-}
+var _ = Describe("NewClientSetFromConfig", func() {
+	It("bounds default HTTP requests without mutating the input", func() {
+		config := &rest.Config{Host: "https://api.example"}
+		clients, err := NewClientSetFromConfig(config)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(clients.Config.Timeout).To(Equal(20 * time.Second))
+		Expect(config.Timeout).To(BeZero())
+	})
+})

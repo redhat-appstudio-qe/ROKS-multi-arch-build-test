@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/redhat-appstudio/konflux-test/internal/evidence"
@@ -55,6 +56,14 @@ func RequiredArtifactNames() []string {
 	return append([]string(nil), requiredArtifactNames...)
 }
 
+func RequiredArtifactNamesForManifest(manifest model.RunManifest) []string {
+	names := RequiredArtifactNames()
+	if len(manifest.FailedBuildLogs) > 0 {
+		names = append(names, "failed-builds/")
+	}
+	return names
+}
+
 func (c Collector) Collect(ctx context.Context, runID string, manifest model.RunManifest, sources []Source) (Report, error) {
 	if c.StateDir == "" || runID == "" {
 		return Report{}, fmt.Errorf("state directory and run ID are required")
@@ -84,6 +93,12 @@ func (c Collector) Collect(ctx context.Context, runID string, manifest model.Run
 		attempt.EndedAt = now().UTC()
 		report.Attempts = append(report.Attempts, attempt)
 	}
+	if len(manifest.FailedBuildLogs) > 0 && !successfulAttempt(report, "failed-builds/") {
+		failedBuildsPath := filepath.Join(root, "failed-builds")
+		if info, err := os.Stat(failedBuildsPath); err == nil && info.IsDir() {
+			report.Attempts = append(report.Attempts, Attempt{Name: "failed-builds", Path: "failed-builds/", Status: "success", StartedAt: now().UTC(), EndedAt: now().UTC()})
+		}
+	}
 	report.EndedAt = now().UTC()
 	report.Attempts = append(report.Attempts, Attempt{Name: "collection-report", Path: "collection-report.json", Status: "success", StartedAt: report.EndedAt, EndedAt: report.EndedAt})
 	if err := writeJSON(filepath.Join(root, "collection-report.json"), report); err != nil {
@@ -95,7 +110,7 @@ func (c Collector) Collect(ctx context.Context, runID string, manifest model.Run
 func (c Collector) CollectAndVerify(ctx context.Context, runID string, manifest model.RunManifest, sources []Source) (model.FailureArtifactReport, error) {
 	report, err := c.Collect(ctx, runID, manifest, sources)
 	root := c.runRoot(runID, manifest)
-	artifactReport := model.FailureArtifactReport{ArtifactPath: root, RequiredArtifactNames: RequiredArtifactNames()}
+	artifactReport := model.FailureArtifactReport{ArtifactPath: root, RequiredArtifactNames: RequiredArtifactNamesForManifest(manifest)}
 	if err != nil {
 		artifactReport.CollectionErrors = append(artifactReport.CollectionErrors, err.Error())
 		return artifactReport, err
@@ -113,7 +128,19 @@ func (c Collector) CollectAndVerify(ctx context.Context, runID string, manifest 
 	}
 	for _, name := range artifactReport.RequiredArtifactNames {
 		path := filepath.Join(root, name)
-		if _, readErr := os.ReadFile(path); readErr != nil {
+		var readErr error
+		if strings.HasSuffix(name, "/") {
+			info, statErr := os.Stat(path)
+			if statErr != nil || !info.IsDir() {
+				readErr = statErr
+				if readErr == nil {
+					readErr = fmt.Errorf("not a directory")
+				}
+			}
+		} else {
+			_, readErr = os.ReadFile(path)
+		}
+		if readErr != nil {
 			artifactReport.CollectionErrors = append(artifactReport.CollectionErrors, name+": "+readErr.Error())
 			continue
 		}

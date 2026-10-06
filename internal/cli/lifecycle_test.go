@@ -5,7 +5,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/redhat-appstudio/konflux-test/internal/cleanup"
 	"github.com/redhat-appstudio/konflux-test/internal/collector"
@@ -26,64 +28,58 @@ func (p *fakePrompt) Confirm(context.Context, string) (bool, error) {
 	return p.approved, nil
 }
 
-func TestLifecycleCollectsFailureArtifactsBeforePrompt(t *testing.T) {
-	stateDir := t.TempDir()
-	client := fake.NewSimpleDynamicClient(runtime.NewScheme(), namespaceObject("tenant", "run-1"))
-	prompt := &fakePrompt{approved: false}
-	manifest := model.RunManifest{RunID: "run-1", Phase: model.PhaseFailed, Fixture: model.FixtureIdentity{TenantNamespace: "tenant"}}
-	sources := lifecycleTestSources()
-	lifecycle := Lifecycle{Store: evidence.NewManifestStore(stateDir), Namespace: cleanup.NamespaceService{Dynamic: client}, Collector: collector.Collector{StateDir: stateDir}, Prompt: prompt, Sources: sources}
-	if err := lifecycle.Finalize(context.Background(), manifest, errors.New("build failed")); err != nil {
-		t.Fatal(err)
-	}
-	if prompt.calls != 1 {
-		t.Fatalf("prompt calls = %d", prompt.calls)
-	}
-	loaded, err := lifecycle.Store.Load("run-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.FailureArtifacts == nil || loaded.FailureArtifacts.VerifiedAt.IsZero() {
-		t.Fatalf("failure artifacts = %#v", loaded.FailureArtifacts)
-	}
-	if _, err := lifecycle.Namespace.Inspect(context.Background(), "tenant"); err != nil {
-		t.Fatal("declined cleanup deleted namespace")
-	}
-}
+var _ = Describe("Lifecycle", func() {
+	It("collects failure artifacts before prompt", func() {
+		stateDir := GinkgoT().TempDir()
+		client := fake.NewSimpleDynamicClient(runtime.NewScheme(), namespaceObject("tenant", "run-1"))
+		prompt := &fakePrompt{approved: false}
+		manifest := model.RunManifest{RunID: "run-1", Phase: model.PhaseFailed, Fixture: model.FixtureIdentity{TenantNamespace: "tenant"}}
+		sources := lifecycleTestSources()
+		lifecycle := Lifecycle{Store: evidence.NewManifestStore(stateDir), Namespace: cleanup.NamespaceService{Dynamic: client}, Collector: collector.Collector{StateDir: stateDir}, Prompt: prompt, Sources: sources}
+		if err := lifecycle.Finalize(context.Background(), manifest, errors.New("build failed")); err != nil {
+			Expect(err).NotTo(HaveOccurred())
+		}
+		Expect(prompt.calls).To(Equal(1))
+		loaded, err := lifecycle.Store.Load("run-1")
+		if err != nil {
+			Expect(err).NotTo(HaveOccurred())
+		}
+		Expect(loaded.FailureArtifacts).NotTo(BeNil())
+		Expect(loaded.FailureArtifacts.VerifiedAt).NotTo(BeZero())
+		if _, err := lifecycle.Namespace.Inspect(context.Background(), "tenant"); err != nil {
+			Fail("declined cleanup deleted namespace")
+		}
+	})
 
-func TestLifecycleSuppressesPromptWhenArtifactCollectionFails(t *testing.T) {
-	stateDir := t.TempDir()
-	client := fake.NewSimpleDynamicClient(runtime.NewScheme(), namespaceObject("tenant", "run-1"))
-	prompt := &fakePrompt{approved: true}
-	manifest := model.RunManifest{RunID: "run-1", Phase: model.PhaseFailed, Fixture: model.FixtureIdentity{TenantNamespace: "tenant"}}
-	lifecycle := Lifecycle{Store: evidence.NewManifestStore(stateDir), Namespace: cleanup.NamespaceService{Dynamic: client}, Collector: collector.Collector{StateDir: stateDir}, Prompt: prompt, Sources: []collector.Source{{Name: "applications", Path: "workload/applications.json", Collect: func(context.Context, string) error { return errors.New("api unavailable") }}}}
-	if err := lifecycle.Finalize(context.Background(), manifest, errors.New("build failed")); err == nil {
-		t.Fatal("expected artifact collection error")
-	}
-	if prompt.calls != 0 {
-		t.Fatalf("prompt calls = %d", prompt.calls)
-	}
-	if _, err := lifecycle.Namespace.Inspect(context.Background(), "tenant"); err != nil {
-		t.Fatal("collection failure deleted namespace")
-	}
-}
+	It("suppresses prompt when artifact collection fails", func() {
+		stateDir := GinkgoT().TempDir()
+		client := fake.NewSimpleDynamicClient(runtime.NewScheme(), namespaceObject("tenant", "run-1"))
+		prompt := &fakePrompt{approved: true}
+		manifest := model.RunManifest{RunID: "run-1", Phase: model.PhaseFailed, Fixture: model.FixtureIdentity{TenantNamespace: "tenant"}}
+		lifecycle := Lifecycle{Store: evidence.NewManifestStore(stateDir), Namespace: cleanup.NamespaceService{Dynamic: client}, Collector: collector.Collector{StateDir: stateDir}, Prompt: prompt, Sources: []collector.Source{{Name: "applications", Path: "workload/applications.json", Collect: func(context.Context, string) error { return errors.New("api unavailable") }}}}
+		err := lifecycle.Finalize(context.Background(), manifest, errors.New("build failed"))
+		Expect(err).To(HaveOccurred())
+		Expect(prompt.calls).To(Equal(0))
+		if _, err := lifecycle.Namespace.Inspect(context.Background(), "tenant"); err != nil {
+			Fail("collection failure deleted namespace")
+		}
+	})
 
-func TestLifecycleSuccessfulDeclinedCleanupPreservesResultAndNamespace(t *testing.T) {
-	stateDir := t.TempDir()
-	client := fake.NewSimpleDynamicClient(runtime.NewScheme(), namespaceObject("tenant", "run-1"))
-	prompt := &fakePrompt{approved: false}
-	manifest := model.RunManifest{RunID: "run-1", Phase: model.PhaseCompleted, Fixture: model.FixtureIdentity{TenantNamespace: "tenant"}}
-	lifecycle := Lifecycle{Store: evidence.NewManifestStore(filepath.Join(stateDir, "state")), Namespace: cleanup.NamespaceService{Dynamic: client}, Prompt: prompt}
-	if err := lifecycle.Finalize(context.Background(), manifest, nil); err != nil {
-		t.Fatal(err)
-	}
-	if prompt.calls != 1 {
-		t.Fatalf("prompt calls = %d", prompt.calls)
-	}
-	if _, err := lifecycle.Namespace.Inspect(context.Background(), "tenant"); err != nil {
-		t.Fatal("declined cleanup deleted namespace")
-	}
-}
+	It("preserves result and namespace after declined successful cleanup", func() {
+		stateDir := GinkgoT().TempDir()
+		client := fake.NewSimpleDynamicClient(runtime.NewScheme(), namespaceObject("tenant", "run-1"))
+		prompt := &fakePrompt{approved: false}
+		manifest := model.RunManifest{RunID: "run-1", Phase: model.PhaseCompleted, Fixture: model.FixtureIdentity{TenantNamespace: "tenant"}}
+		lifecycle := Lifecycle{Store: evidence.NewManifestStore(filepath.Join(stateDir, "state")), Namespace: cleanup.NamespaceService{Dynamic: client}, Prompt: prompt}
+		if err := lifecycle.Finalize(context.Background(), manifest, nil); err != nil {
+			Expect(err).NotTo(HaveOccurred())
+		}
+		Expect(prompt.calls).To(Equal(1))
+		if _, err := lifecycle.Namespace.Inspect(context.Background(), "tenant"); err != nil {
+			Fail("declined cleanup deleted namespace")
+		}
+	})
+})
 
 func lifecycleTestSources() []collector.Source {
 	sources := collector.RequiredArtifactNames()

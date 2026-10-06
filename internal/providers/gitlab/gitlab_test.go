@@ -3,7 +3,9 @@ package gitlab
 import (
 	"context"
 	"errors"
-	"testing"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 
 	"github.com/redhat-appstudio/konflux-test/internal/providers"
 	gl "github.com/xanzy/go-gitlab"
@@ -34,44 +36,35 @@ func (f *fakeClient) UpdateFile(string, string, string, string, string, string) 
 	return "sha-2", nil
 }
 
-func TestValidateFixtureReusesCanonicalProject(t *testing.T) {
-	client := &fakeClient{project: &gl.Project{Path: "dr_test_mathwizz_gl", PathWithNamespace: "konflux-qe/dr_test_mathwizz_gl", WebURL: CanonicalFixtureURL}}
-	got, err := New(client).ValidateFixture(context.Background(), providers.FixtureRepository{Owner: "konflux-qe", Name: "dr_test_mathwizz_gl"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := providers.FixtureRepository{Owner: "konflux-qe", Name: "dr_test_mathwizz_gl", URL: CanonicalFixtureURL}
-	if got != want {
-		t.Fatalf("fixture = %#v, want %#v", got, want)
-	}
-	if client.getCalls != 1 {
-		t.Fatalf("project lookup calls = %d", client.getCalls)
-	}
-}
+var _ = Describe("GitLab provider", func() {
+	It("reuses canonical project", func() {
+		client := &fakeClient{project: &gl.Project{Path: "dr_test_mathwizz_gl", PathWithNamespace: "konflux-qe/dr_test_mathwizz_gl", WebURL: CanonicalFixtureURL}}
+		got, err := New(client).ValidateFixture(context.Background(), providers.FixtureRepository{Owner: "konflux-qe", Name: "dr_test_mathwizz_gl"})
+		if err != nil {
+			Expect(err).NotTo(HaveOccurred())
+		}
+		want := providers.FixtureRepository{Owner: "konflux-qe", Name: "dr_test_mathwizz_gl", URL: CanonicalFixtureURL}
+		Expect(got).To(Equal(want))
+		Expect(client.getCalls).To(Equal(1))
+	})
 
-func TestValidateFixtureRejectsNonCanonicalProjectWithoutCreation(t *testing.T) {
-	client := &fakeClient{}
-	_, err := New(client).ValidateFixture(context.Background(), providers.FixtureRepository{Owner: "other", Name: "dr_test_mathwizz_gl"})
-	if err == nil {
-		t.Fatal("expected canonical fixture rejection")
-	}
-	if client.getCalls != 0 || client.updateCalls != 0 {
-		t.Fatalf("client calls = get %d update %d", client.getCalls, client.updateCalls)
-	}
-}
+	It("rejects non-canonical project without creation", func() {
+		client := &fakeClient{}
+		_, err := New(client).ValidateFixture(context.Background(), providers.FixtureRepository{Owner: "other", Name: "dr_test_mathwizz_gl"})
+		Expect(err).To(HaveOccurred())
+		Expect(client.getCalls).To(Equal(0))
+		Expect(client.updateCalls).To(Equal(0))
+	})
 
-func TestReadAndUpdateFileUseCanonicalProject(t *testing.T) {
-	client := &fakeClient{}
-	adapter := New(client)
-	fixture := providers.FixtureRepository{Owner: "konflux-qe", Name: "dr_test_mathwizz_gl", URL: CanonicalFixtureURL}
-	file, err := adapter.ReadFile(context.Background(), fixture, "web-server/Dockerfile", "main")
-	if err != nil || file.SHA != "sha-1" {
-		t.Fatalf("file = %#v, err = %v", file, err)
-	}
-	if _, err := adapter.UpdateFile(context.Background(), fixture, "web-server/Dockerfile", "main", "content", "sha-1"); err != nil {
-		t.Fatal(err)
-	}
-	if client.updateCalls != 1 {
-		t.Fatalf("update calls = %d", client.updateCalls)
-	}
-}
+	It("reads and updates files in canonical project", func() {
+		client := &fakeClient{}
+		adapter := New(client)
+		fixture := providers.FixtureRepository{Owner: "konflux-qe", Name: "dr_test_mathwizz_gl", URL: CanonicalFixtureURL}
+		file, err := adapter.ReadFile(context.Background(), fixture, "web-server/Dockerfile", "main")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(file.SHA).To(Equal("sha-1"))
+		_, err = adapter.UpdateFile(context.Background(), fixture, "web-server/Dockerfile", "main", "content", "sha-1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(client.updateCalls).To(Equal(1))
+	})
+})

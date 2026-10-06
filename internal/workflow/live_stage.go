@@ -3,12 +3,15 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"path"
 	"strings"
 	"time"
 
 	"github.com/redhat-appstudio/konflux-test/internal/cleanup"
 	"github.com/redhat-appstudio/konflux-test/internal/cluster"
+	"github.com/redhat-appstudio/konflux-test/internal/collector"
 	"github.com/redhat-appstudio/konflux-test/internal/config"
 	"github.com/redhat-appstudio/konflux-test/internal/model"
 	"github.com/redhat-appstudio/konflux-test/internal/providers"
@@ -20,14 +23,15 @@ import (
 var PipelineRunGVR = schema.GroupVersionResource{Group: "tekton.dev", Version: "v1", Resource: "pipelineruns"}
 
 type LiveStage struct {
-	Request     config.Request
-	Clients     *cluster.ClientSet
-	RealCluster *cluster.RealCluster
-	Provider    providers.Provider
-	Source      providers.SourceRepository
-	Fixture     providers.FixtureRepository
-	Prompt      Confirmation
-	Namespace   cleanup.NamespaceService
+	Request              config.Request
+	Clients              *cluster.ClientSet
+	RealCluster          *cluster.RealCluster
+	Provider             providers.Provider
+	Source               providers.SourceRepository
+	Fixture              providers.FixtureRepository
+	Prompt               Confirmation
+	Namespace            cleanup.NamespaceService
+	FailedBuildCollector *collector.FailedBuildCollector
 }
 
 func NewLiveStage(request config.Request, clients *cluster.ClientSet, provider providers.Provider) (*LiveStage, error) {
@@ -38,7 +42,16 @@ func NewLiveStage(request config.Request, clients *cluster.ClientSet, provider p
 	if clients == nil || provider == nil {
 		return nil, fmt.Errorf("cluster clients and provider are required")
 	}
-	stage := &LiveStage{Request: request, Clients: clients, RealCluster: &cluster.RealCluster{Clients: clients}, Provider: provider, Source: source, Fixture: providers.FixtureRepository{Owner: source.Owner, Name: source.Name, URL: source.URL}, Namespace: cleanup.NamespaceService{Dynamic: clients.Dynamic}}
+	stage := &LiveStage{
+		Request:              request,
+		Clients:              clients,
+		RealCluster:          &cluster.RealCluster{Clients: clients},
+		Provider:             provider,
+		Source:               source,
+		Fixture:              providers.FixtureRepository{Owner: source.Owner, Name: source.Name, URL: source.URL},
+		Namespace:            cleanup.NamespaceService{Dynamic: clients.Dynamic},
+		FailedBuildCollector: &collector.FailedBuildCollector{Dynamic: clients.Dynamic, Kubernetes: clients.Kubernetes},
+	}
 	return stage, nil
 }
 
@@ -77,9 +90,9 @@ func (s *LiveStage) EnsureFixture(ctx context.Context, manifest *model.RunManife
 	}
 	s.Fixture = fixture
 	components := []cluster.ComponentSpec{
-		{Name: "mathwizz-web-server", Repository: fixture.URL, Branch: s.Request.SourceBranch, Dockerfile: s.Request.ComponentPaths[0]},
-		{Name: "mathwizz-history-worker", Repository: fixture.URL, Branch: s.Request.SourceBranch, Dockerfile: s.Request.ComponentPaths[1]},
-		{Name: "mathwizz-frontend", Repository: fixture.URL, Branch: s.Request.SourceBranch, Dockerfile: s.Request.ComponentPaths[2]},
+		componentSpec("mathwizz-web-server", fixture.URL, s.Request.SourceBranch, s.Request.ComponentPaths[0]),
+		componentSpec("mathwizz-history-worker", fixture.URL, s.Request.SourceBranch, s.Request.ComponentPaths[1]),
+		componentSpec("mathwizz-frontend", fixture.URL, s.Request.SourceBranch, s.Request.ComponentPaths[2]),
 	}
 	namespace := manifest.Fixture.TenantNamespace
 	if namespace == "" {
@@ -204,7 +217,7 @@ func (s *LiveStage) VerifyBuilds(ctx context.Context, manifest *model.RunManifes
 	if namespace == "" {
 		return fmt.Errorf("run manifest does not contain a tenant namespace")
 	}
-	identities, err := waitForBuildMatches(ctx, s.Request.Timeouts.Build, 10*time.Second, manifest.TriggerCommits, func(ctx context.Context) ([]unstructured.Unstructured, error) {
+	identities, err := waitForBuildMatches(ctx, s.Request.Timeouts.Trigger, s.Request.Timeouts.Build, 10*time.Second, namespace, manifest.TriggerCommits, func(ctx context.Context) ([]unstructured.Unstructured, error) {
 		components, err := s.Clients.Dynamic.Resource(cluster.ComponentGVR).Namespace(namespace).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("list components while waiting for builds: %w", err)
@@ -221,6 +234,13 @@ func (s *LiveStage) VerifyBuilds(ctx context.Context, manifest *model.RunManifes
 		return list.Items, nil
 	})
 	if err != nil {
+		var pipelineRunError *PipelineRunFailedError
+		if errors.As(err, &pipelineRunError) && s.FailedBuildCollector != nil && manifest.ArtifactDirectory != "" {
+			logs, collectErr := s.FailedBuildCollector.CollectFailedBuildLogs(ctx, namespace, pipelineRunError.Name, path.Join(s.Request.StateDir, manifest.ArtifactDirectory))
+			if collectErr == nil {
+				manifest.FailedBuildLogs = append(manifest.FailedBuildLogs, logs...)
+			}
+		}
 		return err
 	}
 	manifest.PipelineRuns = append(manifest.PipelineRuns, identities...)
@@ -299,17 +319,60 @@ func waitForPaCEnabled(ctx context.Context, timeout, interval time.Duration, nam
 	}
 }
 
-func waitForBuildMatches(ctx context.Context, timeout, interval time.Duration, commits []model.TriggerCommit, list func(context.Context) ([]unstructured.Unstructured, error)) ([]model.PipelineRunIdentity, error) {
-	if timeout <= 0 {
+func componentSpec(name, repository, branch, componentPath string) cluster.ComponentSpec {
+	return cluster.ComponentSpec{
+		Name:       name,
+		Repository: repository,
+		Branch:     branch,
+		Context:    path.Dir(componentPath),
+		Dockerfile: path.Base(componentPath),
+	}
+}
+
+func waitForBuildMatches(ctx context.Context, triggerTimeout, buildTimeout, interval time.Duration, namespace string, commits []model.TriggerCommit, list func(context.Context) ([]unstructured.Unstructured, error)) ([]model.PipelineRunIdentity, error) {
+	if triggerTimeout <= 0 {
+		return nil, fmt.Errorf("trigger timeout must be positive")
+	}
+	if buildTimeout <= 0 {
 		return nil, fmt.Errorf("build timeout must be positive")
 	}
 	if interval <= 0 {
 		return nil, fmt.Errorf("build polling interval must be positive")
 	}
-	waitCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	triggerCtx, cancelTrigger := context.WithTimeout(ctx, triggerTimeout)
+	defer cancelTrigger()
 	for {
-		identities, pending, err := matchBuilds(waitCtx, commits, list)
+		objects, err := list(triggerCtx)
+		if err != nil {
+			return nil, err
+		}
+		identities, pending, err := matchBuildsObjects(objects, commits)
+		if err != nil {
+			return nil, err
+		}
+		if !pending {
+			return identities, nil
+		}
+		if allBuildsAppeared(objects, commits) {
+			break
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-triggerCtx.Done():
+			timer.Stop()
+			return nil, noPipelineRunError(namespace, commits, objects)
+		case <-timer.C:
+		}
+	}
+
+	buildCtx, cancelBuild := context.WithTimeout(ctx, buildTimeout)
+	defer cancelBuild()
+	for {
+		objects, err := list(buildCtx)
+		if err != nil {
+			return nil, err
+		}
+		identities, pending, err := matchBuildsObjects(objects, commits)
 		if err != nil {
 			return nil, err
 		}
@@ -318,12 +381,16 @@ func waitForBuildMatches(ctx context.Context, timeout, interval time.Duration, c
 		}
 		timer := time.NewTimer(interval)
 		select {
-		case <-waitCtx.Done():
+		case <-buildCtx.Done():
 			timer.Stop()
-			return nil, fmt.Errorf("timed out waiting for PipelineRuns: %w", waitCtx.Err())
+			return nil, fmt.Errorf("timed out waiting for PipelineRuns after trigger: %w", buildCtx.Err())
 		case <-timer.C:
 		}
 	}
+}
+
+func matchBuildsObjects(objects []unstructured.Unstructured, commits []model.TriggerCommit) ([]model.PipelineRunIdentity, bool, error) {
+	return matchBuildsWithObjects(objects, commits)
 }
 
 func matchBuilds(ctx context.Context, commits []model.TriggerCommit, list func(context.Context) ([]unstructured.Unstructured, error)) ([]model.PipelineRunIdentity, bool, error) {
@@ -331,35 +398,109 @@ func matchBuilds(ctx context.Context, commits []model.TriggerCommit, list func(c
 	if err != nil {
 		return nil, false, err
 	}
+	return matchBuildsWithObjects(objects, commits)
+}
+
+func matchBuildsWithObjects(objects []unstructured.Unstructured, commits []model.TriggerCommit) ([]model.PipelineRunIdentity, bool, error) {
 	identities := make([]model.PipelineRunIdentity, 0, len(commits))
 	for _, commit := range commits {
-		found := false
+		candidates := matchingPipelineRuns(objects, commit)
+		if len(candidates) == 0 {
+			return identities, true, nil
+		}
+		if len(candidates) > 1 && !hasExactSHA(candidates, commit.SHA) {
+			return nil, false, fmt.Errorf("ambiguous PipelineRuns for component %s after trigger %s", commit.Component, commit.SHA)
+		}
 		pending := false
-		for index := range objects {
-			object := &objects[index]
-			labels := object.GetLabels()
-			if labels["pipelinesascode.tekton.dev/sha"] != commit.SHA || labels["appstudio.openshift.io/component"] != commit.Component {
-				continue
-			}
-			found = true
-			status := pipelineRunConditionStatus(object)
-			switch status {
+		succeededCount := 0
+		var firstSucceeded *unstructured.Unstructured
+		for _, candidate := range candidates {
+			switch status := pipelineRunConditionStatus(candidate); status {
 			case "True":
-				identities = append(identities, identityFromObject(object, commit.Component, commit.SHA))
-				pending = false
-				goto nextCommit
+				succeededCount++
+				if firstSucceeded == nil {
+					firstSucceeded = candidate
+				}
 			case "False":
-				return nil, false, fmt.Errorf("PipelineRun %s/%s failed", object.GetNamespace(), object.GetName())
+				return nil, false, &PipelineRunFailedError{Namespace: candidate.GetNamespace(), Name: candidate.GetName(), Component: commit.Component}
 			default:
 				pending = true
 			}
 		}
-		if !found || pending {
+		if succeededCount > 1 {
+			return nil, false, fmt.Errorf("PipelineRun overshoot for component %s: %d succeeded for commit %s, expected exactly 1", commit.Component, succeededCount, commit.SHA)
+		}
+		if succeededCount == 1 && firstSucceeded != nil {
+			identities = append(identities, identityFromObject(firstSucceeded, commit.Component, pipelineRunSHA(firstSucceeded)))
+			continue
+		}
+		if pending {
 			return identities, true, nil
 		}
-	nextCommit:
 	}
 	return identities, false, nil
+}
+
+func matchingPipelineRuns(objects []unstructured.Unstructured, commit model.TriggerCommit) []*unstructured.Unstructured {
+	exact := make([]*unstructured.Unstructured, 0)
+	fallback := make([]*unstructured.Unstructured, 0)
+	for index := range objects {
+		object := &objects[index]
+		labels := object.GetLabels()
+		if labels["appstudio.openshift.io/component"] != commit.Component {
+			continue
+		}
+		if labels["pipelinesascode.tekton.dev/sha"] == commit.SHA {
+			exact = append(exact, object)
+		} else if labels["pipelinesascode.tekton.dev/sha"] != "" && afterTrigger(object, commit) {
+			fallback = append(fallback, object)
+		}
+	}
+	if len(exact) > 0 {
+		return exact
+	}
+	return fallback
+}
+
+func hasExactSHA(objects []*unstructured.Unstructured, sha string) bool {
+	for _, object := range objects {
+		if pipelineRunSHA(object) == sha {
+			return true
+		}
+	}
+	return false
+}
+
+func pipelineRunSHA(object *unstructured.Unstructured) string {
+	return object.GetLabels()["pipelinesascode.tekton.dev/sha"]
+}
+
+func afterTrigger(object *unstructured.Unstructured, commit model.TriggerCommit) bool {
+	return commit.CreatedAt.IsZero() || object.GetCreationTimestamp().Time.After(commit.CreatedAt)
+}
+
+func allBuildsAppeared(objects []unstructured.Unstructured, commits []model.TriggerCommit) bool {
+	for _, commit := range commits {
+		if len(matchingPipelineRuns(objects, commit)) == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func noPipelineRunError(namespace string, commits []model.TriggerCommit, objects []unstructured.Unstructured) error {
+	for _, commit := range commits {
+		if len(matchingPipelineRuns(objects, commit)) == 0 {
+			names := make([]string, 0, len(objects))
+			for index := range objects {
+				if name := objects[index].GetName(); name != "" {
+					names = append(names, name)
+				}
+			}
+			return fmt.Errorf("no PipelineRun for component %s in namespace %s after trigger SHA %s; observed %d PipelineRuns (%s)", commit.Component, namespace, commit.SHA, len(objects), strings.Join(names, ", "))
+		}
+	}
+	return fmt.Errorf("no expected PipelineRuns in namespace %s after trigger; observed %d PipelineRuns", namespace, len(objects))
 }
 
 func pipelineRunConditionStatus(object *unstructured.Unstructured) string {
@@ -375,8 +516,47 @@ func pipelineRunConditionStatus(object *unstructured.Unstructured) string {
 	return "Unknown"
 }
 
+func countBaselinePRs(objects []unstructured.Unstructured) (succeeded, total int) {
+	total = len(objects)
+	for index := range objects {
+		if pipelineRunConditionStatus(&objects[index]) == "True" {
+			succeeded++
+		}
+	}
+	return succeeded, total
+}
+
+func allNewPipelineRunsTerminal(objects []unstructured.Unstructured, baselineSucceeded, baselineTotal, baselineTerminal, expected int) bool {
+	if expected == 0 || len(objects)-baselineTotal < expected {
+		return false
+	}
+	succeeded, total := countBaselinePRs(objects)
+	newTerminal := countTerminalPRs(objects) - baselineTerminal
+	return newTerminal >= expected && succeeded-baselineSucceeded < expected && total-baselineTotal >= expected
+}
+
+func countTerminalPRs(objects []unstructured.Unstructured) int {
+	terminal := 0
+	for index := range objects {
+		if status := pipelineRunConditionStatus(&objects[index]); status == "True" || status == "False" {
+			terminal++
+		}
+	}
+	return terminal
+}
+
+type PipelineRunFailedError struct {
+	Namespace string
+	Name      string
+	Component string
+}
+
+func (e *PipelineRunFailedError) Error() string {
+	return fmt.Sprintf("PipelineRun %s/%s failed", e.Namespace, e.Name)
+}
+
 func (s *LiveStage) VerifyBuildOutputs(ctx context.Context, manifest *model.RunManifest) error {
-	evidence, err := (cluster.BuildOutputInspector{Dynamic: s.Clients.Dynamic, Kubernetes: s.Clients.Kubernetes}).Verify(ctx, manifest.PipelineRuns)
+	evidence, err := (cluster.BuildOutputInspector{Dynamic: s.Clients.Dynamic}).Verify(ctx, manifest.PipelineRuns)
 	if err != nil {
 		return err
 	}

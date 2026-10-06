@@ -2,8 +2,9 @@ package cli
 
 import (
 	"context"
-	"testing"
 
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	"github.com/redhat-appstudio/konflux-test/internal/config"
 )
 
@@ -14,16 +15,16 @@ func (r *recordingRunner) Run(context.Context, config.Request) error {
 	return nil
 }
 
-func TestExecuteDispatchesRun(t *testing.T) {
-	runner := &recordingRunner{}
-	req := config.Defaults()
-	req.Command = config.CommandRun
-	req.ClusterServer = "https://api.example"
-	req.Provider = config.ProviderGitHub
-	if err := Execute(context.Background(), req, runner); err != nil {
-		t.Fatal(err)
-	}
-	if runner.command != config.CommandRun {
-		t.Fatalf("dispatched %q as %q", config.CommandRun, runner.command)
-	}
-}
+var _ = Describe("Execute", func() {
+	It("dispatches run", func() {
+		runner := &recordingRunner{}
+		req := config.Defaults()
+		req.Command = config.CommandRun
+		req.ClusterServer = "https://api.example"
+		req.Provider = config.ProviderGitHub
+		if err := Execute(context.Background(), req, runner); err != nil {
+			Expect(err).NotTo(HaveOccurred())
+		}
+		Expect(runner.command).To(Equal(config.CommandRun))
+	})
+})
