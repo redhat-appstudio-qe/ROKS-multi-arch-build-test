@@ -80,7 +80,7 @@ func (r Runner) Run(ctx context.Context, options Options) (model.RunManifest, er
 		}
 	} else {
 		manifest = model.RunManifest{RunID: runID, Provider: options.Provider, TargetClusterServer: options.ClusterServer, Phase: model.PhasePreflight, CreatedAt: now().UTC(), Fixture: model.FixtureIdentity{TenantNamespace: options.FixtureNamespace, Application: options.Application}}
-		if err := r.Store.Create(manifest); err != nil {
+		if err := r.Store.Create(&manifest); err != nil {
 			return manifest, err
 		}
 	}
@@ -113,6 +113,9 @@ func (r Runner) Run(ctx context.Context, options Options) (model.RunManifest, er
 				return manifest, err
 			}
 		}
+	}
+	if err := r.Store.PublishLatest(manifest); err != nil {
+		return manifest, err
 	}
 	return manifest, nil
 }

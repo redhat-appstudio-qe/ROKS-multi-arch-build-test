@@ -32,6 +32,7 @@ type Source struct {
 type Attempt struct {
 	Name      string    `json:"name"`
 	Path      string    `json:"path,omitempty"`
+	Optional  bool      `json:"optional,omitempty"`
 	Status    string    `json:"status"`
 	Error     string    `json:"error,omitempty"`
 	StartedAt time.Time `json:"startedAt"`
@@ -62,7 +63,7 @@ func (c Collector) Collect(ctx context.Context, runID string, manifest model.Run
 	if c.Now != nil {
 		now = c.Now
 	}
-	root := filepath.Join(c.StateDir, runID)
+	root := c.runRoot(runID, manifest)
 	if err := os.MkdirAll(filepath.Join(root, "workload"), 0o750); err != nil {
 		return Report{}, fmt.Errorf("create collection directory: %w", err)
 	}
@@ -71,7 +72,7 @@ func (c Collector) Collect(ctx context.Context, runID string, manifest model.Run
 	}
 	report := Report{RunID: runID, StartedAt: now().UTC(), Attempts: []Attempt{{Name: "manifest", Path: "session/manifest.json", Status: "success", StartedAt: now().UTC(), EndedAt: now().UTC()}}}
 	for _, source := range sources {
-		attempt := Attempt{Name: source.Name, Path: source.Path, StartedAt: now().UTC()}
+		attempt := Attempt{Name: source.Name, Path: source.Path, Optional: source.Optional, StartedAt: now().UTC()}
 		if source.Collect == nil {
 			attempt.Status = "omitted"
 		} else if err := source.Collect(ctx, root); err != nil {
@@ -93,7 +94,7 @@ func (c Collector) Collect(ctx context.Context, runID string, manifest model.Run
 
 func (c Collector) CollectAndVerify(ctx context.Context, runID string, manifest model.RunManifest, sources []Source) (model.FailureArtifactReport, error) {
 	report, err := c.Collect(ctx, runID, manifest, sources)
-	root := filepath.Join(c.StateDir, runID)
+	root := c.runRoot(runID, manifest)
 	artifactReport := model.FailureArtifactReport{ArtifactPath: root, RequiredArtifactNames: RequiredArtifactNames()}
 	if err != nil {
 		artifactReport.CollectionErrors = append(artifactReport.CollectionErrors, err.Error())
@@ -106,7 +107,7 @@ func (c Collector) CollectAndVerify(ctx context.Context, runID string, manifest 
 	}
 	report = storedReport
 	for _, attempt := range report.Attempts {
-		if attempt.Status == "error" {
+		if attempt.Status == "error" && !attempt.Optional {
 			artifactReport.CollectionErrors = append(artifactReport.CollectionErrors, attempt.Name+": "+attempt.Error)
 		}
 	}
@@ -127,6 +128,14 @@ func (c Collector) CollectAndVerify(ctx context.Context, runID string, manifest 
 	}
 	artifactReport.VerifiedAt = time.Now().UTC()
 	return artifactReport, nil
+}
+
+func (c Collector) runRoot(runID string, manifest model.RunManifest) string {
+	directory := manifest.ArtifactDirectory
+	if directory == "" {
+		directory = runID
+	}
+	return filepath.Join(c.StateDir, directory)
 }
 
 func successfulAttempt(report Report, path string) bool {
