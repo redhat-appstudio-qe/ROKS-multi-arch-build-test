@@ -34,11 +34,11 @@ func TestCollectorSuppressesVerifiedReportWhenRequiredSourceFails(t *testing.T) 
 
 func TestCollectorRedactsManifestValues(t *testing.T) {
 	root := t.TempDir()
-	_, err := (Collector{StateDir: root}).Collect(context.Background(), "run-3", model.RunManifest{RunID: "run-3", BuildOutputs: []model.BuildOutputEvidence{{CreatedOutputs: map[string]string{"password": "secret-value"}}}}, nil)
+	_, err := (Collector{StateDir: root}).Collect(context.Background(), "run-3", model.RunManifest{RunID: "run-3", ArtifactDirectory: "github-run-14:23_5.10.2026", BuildOutputs: []model.BuildOutputEvidence{{CreatedOutputs: map[string]string{"password": "secret-value"}}}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(root, "run-3", "session", "manifest.json"))
+	data, err := os.ReadFile(filepath.Join(root, "github-run-14:23_5.10.2026", "session", "manifest.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

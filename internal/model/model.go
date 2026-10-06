@@ -105,6 +105,7 @@ type FailureArtifactReport struct {
 
 type RunManifest struct {
 	RunID               string                 `json:"runID"`
+	ArtifactDirectory   string                 `json:"artifactDirectory"`
 	Provider            string                 `json:"provider"`
 	TargetClusterServer string                 `json:"targetClusterServer"`
 	CreatedAt           time.Time              `json:"createdAt"`

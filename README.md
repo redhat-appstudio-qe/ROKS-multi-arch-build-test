@@ -1,4 +1,4 @@
-# Local Konflux Build Validation
+# Local Multi-Architecture Build Testing Tool for ROKS Konflux Clusters
 
 `konflux-test` validates multi-architecture build creation on `kflux-lw-p01`.
 It reuses fixed repositories, appends one harmless comment to each of their
@@ -7,8 +7,8 @@ pre-publication `linux/amd64` and `linux/arm64` build outputs, then stops.
 
 Fixed fixtures:
 
-- GitHub: `https://github.com/redhat-appstudio-qe/dr_test_mathwizz`
-- GitLab: `https://gitlab.com/konflux-qe/dr_test_mathwizz_gl`
+- [dr_test_mathwizz](https://github.com/redhat-appstudio-qe/dr_test_mathwizz)
+- [dr_test_mathwizz_gl](https://gitlab.com/konflux-qe/dr_test_mathwizz_gl)
 
 The harness never copies, creates, forks, renames, or deletes repositories. It
 does not query registries, archives, pruning, backup services, or unrelated
@@ -23,13 +23,9 @@ resources.
   `linux/amd64` and `linux/arm64`. Dynamic arm64 provisioning is sufficient;
   physical arm64 nodes are not required.
 - PaC onboarding must be complete for all three components, with current
-  `.tekton` configuration available on the fixture's default branch. The
+  `.tekton` configuration available on each fixture's default branch. The
   harness waits for PaC readiness before writing trigger comments and does not
   merge onboarding changes.
-- `GITHUB_TOKEN` for GitHub runs, or `GITLAB_BOT_TOKEN` and optional
-  `GITLAB_API_URL` for GitLab runs.
-
-Copy `.konflux-test.env.example` to `.konflux-test.env`. Keep the copy local.
 
 ## Commands
 
@@ -49,18 +45,36 @@ may reuse only a namespace with both exact labels and the resumed run ID.
 
 After success, the harness prompts before deleting the current owned tenant
 namespace. A declined prompt retains the namespace and successful result.
-After failure, it saves and verifies these artifacts before prompting:
+After failure, it saves and verifies required artifacts before prompting.
 
-```text
-session/manifest.json
-workload/applications.json
-workload/components.json
-workload/pipelineruns.json
-workload/taskruns.json
-workload/pods.json
-collection-report.json
-```
+## Environment configuration
 
-Incomplete artifact collection suppresses cleanup prompting and retains the
-namespace. Runtime state is stored under `.konflux-test-runs/<run-id>/` with
-redaction applied before evidence is written.
+Copy `.konflux-test.env.example` to `.konflux-test.env`. Keep the copy local.
+Set `GITHUB_TOKEN` for GitHub runs. Set `GITLAB_BOT_TOKEN` and, when needed,
+`GITLAB_API_URL` for GitLab runs. Set `KUBECONFIG` and the explicit
+`KONFLUX_CLUSTER_SERVER` guard in the same file.
+
+The parser reads `KEY=VALUE` lines. It does not execute the environment file.
+
+## Artifact retention
+
+Runtime evidence is stored under `.konflux-test-runs/`.
+
+- Each run directory is named `github-run-<hh:mm_d.m.y>` or
+  `gitlab-run-<hh:mm_d.m.y>`. A combined execution uses
+  `combined-run-<hh:mm_d.m.y>`.
+- `latest/` is a directory containing the newest completed run's artifacts.
+  A new run does not replace it at creation or failure. Replacement occurs
+  only after a newer run completes.
+- Each run stores `manifest.json` and `status.json`.
+- Failed runs store `session/manifest.json`, workload snapshots for
+  Applications, Components, PipelineRuns, TaskRuns, and Pods, plus
+  `collection-report.json`.
+- Available pod logs are stored under
+  `logs/<namespace>/<pod>/<container>.log`. Log requests use the run start
+  time as `SinceTime` and stop with the run's collection context; historical
+  logs are not requested.
+- Credential-like fields in JSON evidence are redacted before writing.
+
+Incomplete failure-artifact collection suppresses cleanup prompting and retains
+the namespace.

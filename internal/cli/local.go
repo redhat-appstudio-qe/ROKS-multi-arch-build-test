@@ -51,14 +51,21 @@ func (runner LiveRunner) Run(ctx context.Context, request config.Request) error 
 		},
 	})
 	if err != nil {
-		finalizeErr := (Lifecycle{Store: store, Namespace: stage.Namespace, Collector: collector.Collector{StateDir: request.StateDir}, Prompt: stage.Prompt, Sources: collector.KubernetesSources(clients.Dynamic, manifest.Fixture.TenantNamespace, manifest.RunID)}).Finalize(ctx, manifest, err)
+		sources := collector.KubernetesSources(clients.Dynamic, manifest.Fixture.TenantNamespace, manifest.RunID)
+		sources = append(sources, collector.KubernetesPodLogSources(clients.Kubernetes, manifest.Fixture.TenantNamespace, manifest.CreatedAt)...)
+		finalizeErr := (Lifecycle{Store: store, Namespace: stage.Namespace, Collector: collector.Collector{StateDir: request.StateDir}, Prompt: stage.Prompt, Sources: sources}).Finalize(ctx, manifest, err)
 		if finalizeErr != nil {
 			return fmt.Errorf("run %s failed at %s: %w; finalization failed: %v", manifest.RunID, manifest.Phase, err, finalizeErr)
 		}
 		return fmt.Errorf("run %s failed at %s: %w", manifest.RunID, manifest.Phase, err)
 	}
-	if err := (Lifecycle{Store: store, Namespace: stage.Namespace, Prompt: stage.Prompt}).Finalize(ctx, manifest, nil); err != nil {
+	sources := collector.KubernetesSources(clients.Dynamic, manifest.Fixture.TenantNamespace, manifest.RunID)
+	sources = append(sources, collector.KubernetesPodLogSources(clients.Kubernetes, manifest.Fixture.TenantNamespace, manifest.CreatedAt)...)
+	if err := (Lifecycle{Store: store, Namespace: stage.Namespace, Collector: collector.Collector{StateDir: request.StateDir}, Prompt: stage.Prompt, Sources: sources}).Finalize(ctx, manifest, nil); err != nil {
 		return fmt.Errorf("run %s completed but finalization failed: %w", manifest.RunID, err)
+	}
+	if err := store.PublishLatest(manifest); err != nil {
+		return fmt.Errorf("run %s completed but latest artifact publication failed: %w", manifest.RunID, err)
 	}
 	fmt.Printf("completed run %s at phase %s\n", manifest.RunID, manifest.Phase)
 	return nil
@@ -98,12 +105,20 @@ func (l Lifecycle) Finalize(ctx context.Context, manifest model.RunManifest, run
 		report, collectErr := l.Collector.CollectAndVerify(ctx, manifest.RunID, manifest, sources)
 		manifest.FailureArtifacts = &report
 		if l.Store.Root != "" {
-			if saveErr := l.Store.Save(manifest); saveErr != nil {
+			if saveErr := l.Store.Save(&manifest); saveErr != nil {
 				return fmt.Errorf("save failure artifact report: %w", saveErr)
 			}
 		}
 		if collectErr != nil {
 			return collectErr
+		}
+	} else if l.Collector.StateDir != "" {
+		sources := l.Sources
+		if sources == nil && l.Namespace.Dynamic != nil {
+			sources = collector.KubernetesSources(l.Namespace.Dynamic, namespace, manifest.RunID)
+		}
+		if _, err := l.Collector.Collect(ctx, manifest.RunID, manifest, sources); err != nil {
+			return err
 		}
 	}
 	if l.Prompt == nil {
