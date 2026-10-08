@@ -57,9 +57,6 @@ func (i BuildOutputInspector) verifyPipelineRun(ctx context.Context, identity mo
 	if identity.UID != "" && pipelineRun.GetUID() != identity.UID {
 		return model.BuildOutputEvidence{}, fmt.Errorf("PipelineRun %s/%s identity changed", identity.Namespace, identity.Name)
 	}
-	if conditionStatus(pipelineRun) != "True" {
-		return model.BuildOutputEvidence{}, fmt.Errorf("PipelineRun %s/%s did not succeed", identity.Namespace, identity.Name)
-	}
 	if identity.Component == "" {
 		return model.BuildOutputEvidence{}, fmt.Errorf("PipelineRun %s/%s has no component identity", identity.Namespace, identity.Name)
 	}
@@ -74,13 +71,13 @@ func (i BuildOutputInspector) verifyPipelineRun(ctx context.Context, identity mo
 		if !ownedByPipelineRun(taskRun, string(pipelineRun.GetUID()), pipelineRun.GetName()) {
 			continue
 		}
+		if !IsBuildTaskRun(taskRun) {
+			continue
+		}
 		if conditionStatus(taskRun) == "False" {
 			return model.BuildOutputEvidence{}, fmt.Errorf("build TaskRun %s/%s failed", taskRun.GetNamespace(), taskRun.GetName())
 		}
 		if conditionStatus(taskRun) != "True" {
-			continue
-		}
-		if !IsBuildTaskRun(taskRun) {
 			continue
 		}
 		platform, output, digest := taskRunOutput(taskRun)
@@ -127,6 +124,11 @@ func ownedByPipelineRun(taskRun *unstructured.Unstructured, uid, name string) bo
 	return false
 }
 
+// OwnedByPipelineRun reports whether TaskRun belongs to the named PipelineRun.
+func OwnedByPipelineRun(taskRun *unstructured.Unstructured, uid, name string) bool {
+	return ownedByPipelineRun(taskRun, uid, name)
+}
+
 func conditionStatus(object *unstructured.Unstructured) string {
 	conditions, _, _ := unstructured.NestedSlice(object.Object, "status", "conditions")
 	for _, raw := range conditions {
@@ -142,7 +144,8 @@ func conditionStatus(object *unstructured.Unstructured) string {
 
 func IsBuildTaskRun(taskRun *unstructured.Unstructured) bool {
 	labels := taskRun.GetLabels()
-	if labels["tekton.dev/pipelineTask"] != "build-container" {
+	pipelineTask := labels["tekton.dev/pipelineTask"]
+	if pipelineTask != "build-container" && pipelineTask != "build-images" {
 		return false
 	}
 	if strings.Contains(strings.ToLower(labels["tekton.dev/task"]), "buildah") {
@@ -172,8 +175,10 @@ func taskRunOutput(taskRun *unstructured.Unstructured) (string, string, string) 
 		}
 		name, _ := result["name"].(string)
 		value, _ := result["value"].(string)
-		if strings.Contains(strings.ToUpper(name), "PLATFORM") && isBuildPlatform(value) {
-			platform = value
+		if strings.Contains(strings.ToUpper(name), "PLATFORM") {
+			if normalized := normalizeBuildPlatform(value); normalized != "" {
+				platform = normalized
+			}
 		}
 		if strings.TrimSpace(value) == "" {
 			continue
@@ -195,9 +200,10 @@ func taskRunPlatform(taskRun *unstructured.Unstructured) string {
 	for _, values := range []map[string]string{taskRun.GetLabels(), taskRun.GetAnnotations()} {
 		for _, key := range []string{
 			"build.appstudio.redhat.com/platform",
+			"build.appstudio.redhat.com/target-platform",
 			"build.appstudio.openshift.io/platform",
 		} {
-			if platform := strings.TrimSpace(values[key]); isBuildPlatform(platform) {
+			if platform := normalizeBuildPlatform(values[key]); platform != "" {
 				return platform
 			}
 		}
@@ -210,8 +216,10 @@ func taskRunPlatform(taskRun *unstructured.Unstructured) string {
 		}
 		name, _ := param["name"].(string)
 		if strings.EqualFold(name, "PLATFORM") {
-			if platform, ok := param["value"].(string); ok && isBuildPlatform(platform) {
-				return platform
+			if value, ok := param["value"].(string); ok {
+				if platform := normalizeBuildPlatform(value); platform != "" {
+					return platform
+				}
 			}
 		}
 	}
@@ -219,5 +227,16 @@ func taskRunPlatform(taskRun *unstructured.Unstructured) string {
 }
 
 func isBuildPlatform(value string) bool {
-	return value == "linux/amd64" || value == "linux/arm64"
+	return normalizeBuildPlatform(value) != ""
+}
+
+func normalizeBuildPlatform(value string) string {
+	switch strings.TrimSpace(value) {
+	case "linux/amd64", "linux/x86_64", "linux-x86_64":
+		return "linux/amd64"
+	case "linux/arm64":
+		return "linux/arm64"
+	default:
+		return ""
+	}
 }

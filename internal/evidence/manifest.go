@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redhat-appstudio/konflux-test/internal/model"
 )
 
@@ -34,12 +35,12 @@ func (s ManifestStore) RunDirFor(manifest model.RunManifest) string {
 	return filepath.Join(s.Root, directory)
 }
 
-func ArtifactDirectoryName(provider string, createdAt time.Time) string {
+func ArtifactDirectoryName(provider string, createdAt time.Time, runID string) string {
 	provider = strings.TrimSpace(provider)
 	if provider == "" {
 		provider = "run"
 	}
-	return fmt.Sprintf("%s-run-%s", provider, createdAt.Format("15:04")+"_"+createdAt.Format("2.1.2006"))
+	return fmt.Sprintf("%s-run-%s_%s", provider, createdAt.Format("15:04")+"_"+createdAt.Format("2.1.2006"), runID)
 }
 
 func (s ManifestStore) Create(manifest *model.RunManifest) error {
@@ -50,16 +51,34 @@ func (s ManifestStore) Create(manifest *model.RunManifest) error {
 		manifest.CreatedAt = time.Now().UTC()
 	}
 	if strings.TrimSpace(manifest.ArtifactDirectory) == "" {
-		manifest.ArtifactDirectory = ArtifactDirectoryName(manifest.Provider, manifest.CreatedAt)
+		manifest.ArtifactDirectory = ArtifactDirectoryName(manifest.Provider, manifest.CreatedAt, manifest.RunID)
+	}
+	if err := validateArtifactDirectory(manifest.ArtifactDirectory); err != nil {
+		return err
 	}
 	manifest.UpdatedAt = manifest.CreatedAt
-	if err := os.MkdirAll(s.RunDirFor(*manifest), 0o750); err != nil {
+	if err := os.MkdirAll(s.Root, 0o750); err != nil {
+		return err
+	}
+	runDir := s.RunDirFor(*manifest)
+	if _, err := os.Lstat(runDir); err == nil {
+		return fmt.Errorf("run artifact directory %s already exists", runDir)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Mkdir(runDir, 0o750); err != nil {
 		return err
 	}
 	if err := s.writeJSON(filepath.Join(s.RunDirFor(*manifest), "manifest.json"), manifest); err != nil {
 		return err
 	}
-	return s.writeStatus(*manifest)
+	if err := s.writeStatus(*manifest); err != nil {
+		return err
+	}
+	if err := s.SetLatest(*manifest); err != nil {
+		return fmt.Errorf("activate run artifacts: %w", err)
+	}
+	return nil
 }
 
 func (s ManifestStore) Save(manifest *model.RunManifest) error {
@@ -67,7 +86,10 @@ func (s ManifestStore) Save(manifest *model.RunManifest) error {
 		return errors.New("run ID is required")
 	}
 	if strings.TrimSpace(manifest.ArtifactDirectory) == "" {
-		manifest.ArtifactDirectory = ArtifactDirectoryName(manifest.Provider, manifest.CreatedAt)
+		manifest.ArtifactDirectory = ArtifactDirectoryName(manifest.Provider, manifest.CreatedAt, manifest.RunID)
+	}
+	if err := validateArtifactDirectory(manifest.ArtifactDirectory); err != nil {
+		return err
 	}
 	manifest.UpdatedAt = time.Now().UTC()
 	if err := os.MkdirAll(s.RunDirFor(*manifest), 0o750); err != nil {
@@ -107,88 +129,138 @@ func (s ManifestStore) Load(runID string) (model.RunManifest, error) {
 }
 
 func (s ManifestStore) Latest() (string, error) {
-	latestPath := filepath.Join(s.Root, latestDirectory)
-	info, err := os.Stat(latestPath)
+	manifest, err := s.latestManifest()
 	if err != nil {
 		return "", err
 	}
-	if info.IsDir() {
-		data, err := os.ReadFile(filepath.Join(latestPath, "manifest.json"))
-		if err != nil {
-			return "", err
-		}
-		var manifest model.RunManifest
-		if err := json.Unmarshal(data, &manifest); err != nil {
-			return "", fmt.Errorf("decode latest manifest: %w", err)
-		}
-		if manifest.RunID == "" {
-			return "", errors.New("latest manifest has no run ID")
-		}
-		return manifest.RunID, nil
-	}
-	data, err := os.ReadFile(latestPath)
-	if err != nil {
-		return "", err
-	}
-	runID := strings.TrimSpace(string(data))
-	if runID == "" {
-		return "", errors.New("latest alias is empty")
-	}
-	return runID, nil
+	return manifest.RunID, nil
 }
 
-func (s ManifestStore) PublishLatest(manifest model.RunManifest) error {
-	if manifest.Phase != model.PhaseCompleted {
-		return fmt.Errorf("only completed runs can be published as latest")
+// SetLatest atomically points latest at a run directory. The relative symlink
+// keeps the alias relocatable and exposes artifacts as the run writes them.
+func (s ManifestStore) SetLatest(manifest model.RunManifest) error {
+	if strings.TrimSpace(manifest.RunID) == "" {
+		return errors.New("run ID is required")
+	}
+	if err := validateArtifactDirectory(manifest.ArtifactDirectory); err != nil {
+		return err
 	}
 	source := s.RunDirFor(manifest)
 	if info, err := os.Stat(source); err != nil || !info.IsDir() {
 		if err == nil {
 			err = fmt.Errorf("run artifact path is not a directory")
 		}
-		return fmt.Errorf("read completed run artifacts: %w", err)
+		return fmt.Errorf("read run artifacts: %w", err)
 	}
 	if err := os.MkdirAll(s.Root, 0o750); err != nil {
 		return err
 	}
-	staging, err := os.MkdirTemp(s.Root, ".latest-staging-")
+	root, err := filepath.Abs(s.Root)
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(staging)
-	if err := copyDirectory(source, staging); err != nil {
-		return fmt.Errorf("stage latest artifacts: %w", err)
-	}
-	latestPath := filepath.Join(s.Root, latestDirectory)
-	backupPath := ""
-	if _, err := os.Stat(latestPath); err == nil {
-		file, err := os.CreateTemp(s.Root, ".latest-backup-")
-		if err != nil {
-			return err
-		}
-		backupPath = file.Name()
-		if err := file.Close(); err != nil {
-			return err
-		}
-		if err := os.Remove(backupPath); err != nil {
-			return err
-		}
-		if err := os.Rename(latestPath, backupPath); err != nil {
-			return err
-		}
-	}
-	if err := os.Rename(staging, latestPath); err != nil {
-		if backupPath != "" {
-			_ = os.Rename(backupPath, latestPath)
-		}
+	source, err = filepath.Abs(source)
+	if err != nil {
 		return err
 	}
-	if backupPath != "" {
-		if err := os.RemoveAll(backupPath); err != nil {
-			return err
+	relativeSource, err := filepath.Rel(root, source)
+	if err != nil || relativeSource == "." || relativeSource == ".." || strings.HasPrefix(relativeSource, ".."+string(filepath.Separator)) || filepath.IsAbs(relativeSource) {
+		return fmt.Errorf("run artifact path must be a direct child of the state directory")
+	}
+	if filepath.Dir(relativeSource) != "." {
+		return fmt.Errorf("run artifact path must be a direct child of the state directory")
+	}
+
+	unlock, err := acquireLatestUpdateLock(s.Root)
+	if err != nil {
+		return fmt.Errorf("lock latest artifact update: %w", err)
+	}
+	defer unlock()
+	current, err := s.latestManifest()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read current latest run: %w", err)
+	}
+	if err == nil && !newerRun(manifest, *current) {
+		return nil
+	}
+	temporaryLink := filepath.Join(s.Root, ".latest-"+uuid.NewString())
+	if err := os.Symlink(relativeSource, temporaryLink); err != nil {
+		return fmt.Errorf("create latest artifact link: %w", err)
+	}
+	defer os.Remove(temporaryLink)
+
+	latestPath := filepath.Join(s.Root, latestDirectory)
+	if info, err := os.Lstat(latestPath); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+		legacyPath := filepath.Join(s.Root, ".latest-legacy-"+uuid.NewString())
+		exchanged, err := exchangeLatestPaths(temporaryLink, latestPath)
+		if err != nil {
+			return fmt.Errorf("atomically replace legacy latest directory: %w", err)
 		}
+		if exchanged {
+			// The old directory is now at temporaryLink; keep it as a hidden
+			// backup after latest already points to the new run.
+			_ = os.Rename(temporaryLink, legacyPath)
+			return nil
+		}
+		return errors.New("cannot atomically replace legacy latest directory on this platform; preserving existing latest artifacts")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	} else if err := os.Rename(temporaryLink, latestPath); err != nil {
+		return err
 	}
 	return nil
+}
+
+func validateArtifactDirectory(directory string) error {
+	if strings.TrimSpace(directory) == "" || directory == "." || directory == ".." || filepath.IsAbs(directory) || filepath.Base(directory) != directory || strings.ContainsAny(directory, `/\\`) {
+		return errors.New("artifact directory must be a single directory name")
+	}
+	return nil
+}
+
+func newerRun(candidate, current model.RunManifest) bool {
+	if candidate.CreatedAt.After(current.CreatedAt) {
+		return true
+	}
+	if candidate.CreatedAt.Equal(current.CreatedAt) && candidate.RunID > current.RunID {
+		return true
+	}
+	return false
+}
+
+func (s ManifestStore) latestManifest() (*model.RunManifest, error) {
+	latestPath := filepath.Join(s.Root, latestDirectory)
+	info, err := os.Stat(latestPath)
+	if err != nil {
+		return nil, err
+	}
+	if info.IsDir() {
+		data, err := os.ReadFile(filepath.Join(latestPath, "manifest.json"))
+		if err != nil {
+			return nil, err
+		}
+		var manifest model.RunManifest
+		if err := json.Unmarshal(data, &manifest); err != nil {
+			return nil, fmt.Errorf("decode latest manifest: %w", err)
+		}
+		if manifest.RunID == "" {
+			return nil, errors.New("latest manifest has no run ID")
+		}
+		return &manifest, nil
+	}
+	data, err := os.ReadFile(latestPath)
+	if err != nil {
+		return nil, err
+	}
+	runID := strings.TrimSpace(string(data))
+	if runID == "" {
+		return nil, errors.New("latest alias is empty")
+	}
+	manifest, err := s.Load(runID)
+	if err != nil {
+		return nil, err
+	}
+	return &manifest, nil
 }
 
 func (s ManifestStore) findRunDir(runID string) (string, error) {
@@ -227,30 +299,6 @@ func (s ManifestStore) writeStatus(manifest model.RunManifest) error {
 		return err
 	}
 	return nil
-}
-
-func copyDirectory(source, destination string) error {
-	return filepath.WalkDir(source, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		relative, err := filepath.Rel(source, path)
-		if err != nil {
-			return err
-		}
-		target := destination
-		if relative != "." {
-			target = filepath.Join(destination, relative)
-		}
-		if entry.IsDir() {
-			return os.MkdirAll(target, 0o750)
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(target, data, 0o640)
-	})
 }
 
 func (s ManifestStore) writeJSON(path string, value any) error {

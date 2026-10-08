@@ -156,11 +156,11 @@ func (c FailedBuildCollector) writeContainerLog(ctx context.Context, namespace, 
 	}
 	safeTaskRun := safePathPart(taskRunName)
 	safeContainer := safePathPart(container)
-	logPath := filepath.Join(logDir, safeTaskRun+"_"+safeContainer+".log")
-	if err := os.WriteFile(logPath, data, 0o640); err != nil {
+	fileName := safeTaskRun + "_" + safeContainer + ".log"
+	if err := os.WriteFile(filepath.Join(logDir, fileName), data, 0o640); err != nil {
 		return "", err
 	}
-	return logPath, nil
+	return filepath.Join("failed-builds", fileName), nil
 }
 
 func taskRunConditionStatus(taskRun *unstructured.Unstructured) string {

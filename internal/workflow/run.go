@@ -114,9 +114,6 @@ func (r Runner) Run(ctx context.Context, options Options) (model.RunManifest, er
 			}
 		}
 	}
-	if err := r.Store.PublishLatest(manifest); err != nil {
-		return manifest, err
-	}
 	return manifest, nil
 }
 

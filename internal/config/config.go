@@ -11,8 +11,10 @@ import (
 
 const (
 	CommandRun                   = "run"
+	CommandCleanup               = "cleanup"
 	ProviderGitHub               = "github"
 	ProviderGitLab               = "gitlab"
+	ProviderBoth                 = "both"
 	DefaultStateDir              = ".konflux-test-runs"
 	DefaultGitHubRepo            = "https://github.com/redhat-appstudio-qe/dr_test_mathwizz"
 	DefaultGitLabRepo            = "https://gitlab.com/konflux-qe/dr_test_mathwizz_gl"
@@ -73,7 +75,7 @@ func Defaults() Request {
 
 func Parse(args []string) (Request, error) {
 	if len(args) == 0 {
-		return Request{}, errors.New("usage: konflux-test run <github|gitlab> ...")
+		return Request{}, errors.New("usage: konflux-test run <github|gitlab|both> ... | cleanup --run-id <id> ...")
 	}
 	req := Defaults()
 	req.Command = args[0]
@@ -82,7 +84,7 @@ func Parse(args []string) (Request, error) {
 	switch req.Command {
 	case CommandRun:
 		if len(remaining) == 0 {
-			return Request{}, errors.New("run requires provider github or gitlab")
+			return Request{}, errors.New("run requires provider github, gitlab, or both")
 		}
 		req.Provider = remaining[0]
 		if req.Provider == ProviderGitLab {
@@ -90,9 +92,10 @@ func Parse(args []string) (Request, error) {
 			req.TenantNamespace = DefaultGitLabTenantNamespace
 		}
 		remaining = remaining[1:]
-		if req.Provider != ProviderGitHub && req.Provider != ProviderGitLab {
+		if req.Provider != ProviderGitHub && req.Provider != ProviderGitLab && req.Provider != ProviderBoth {
 			return Request{}, fmt.Errorf("unsupported provider %q", req.Provider)
 		}
+	case CommandCleanup:
 	default:
 		return Request{}, fmt.Errorf("unsupported command %q", req.Command)
 	}
@@ -101,16 +104,20 @@ func Parse(args []string) (Request, error) {
 	fs.SetOutput(os.Stderr)
 	fs.StringVar(&req.ClusterServer, "cluster-server", "", "expected Kubernetes API server URL")
 	fs.StringVar(&req.StateDir, "state-dir", req.StateDir, "run state directory")
-	fs.StringVar(&req.TenantNamespace, "tenant-namespace", req.TenantNamespace, "persistent tenant namespace")
-	fs.StringVar(&req.ApplicationName, "application", req.ApplicationName, "persistent Application name")
-	fs.StringVar(&req.SourceRepository, "source-repository", req.SourceRepository, "source repository")
-	fs.StringVar(&req.SourceBranch, "branch", req.SourceBranch, "source branch")
 	var envFile string
 	fs.StringVar(&envFile, "env-file", "", "dotenv file containing provider credentials")
-	fs.DurationVar(&req.Timeouts.Preflight, "preflight-timeout", req.Timeouts.Preflight, "preflight timeout")
-	fs.DurationVar(&req.Timeouts.Trigger, "trigger-timeout", req.Timeouts.Trigger, "PipelineRun trigger window")
-	fs.DurationVar(&req.Timeouts.Build, "build-timeout", req.Timeouts.Build, "build timeout")
-	fs.StringVar(&req.ResumeRunID, "resume", "", "resume an existing run ID")
+	if req.Command == CommandRun {
+		fs.StringVar(&req.TenantNamespace, "tenant-namespace", req.TenantNamespace, "persistent tenant namespace")
+		fs.StringVar(&req.ApplicationName, "application", req.ApplicationName, "persistent Application name")
+		fs.StringVar(&req.SourceRepository, "source-repository", req.SourceRepository, "source repository")
+		fs.StringVar(&req.SourceBranch, "branch", req.SourceBranch, "source branch")
+		fs.DurationVar(&req.Timeouts.Preflight, "preflight-timeout", req.Timeouts.Preflight, "preflight timeout")
+		fs.DurationVar(&req.Timeouts.Trigger, "trigger-timeout", req.Timeouts.Trigger, "PipelineRun trigger window")
+		fs.DurationVar(&req.Timeouts.Build, "build-timeout", req.Timeouts.Build, "build timeout")
+		fs.StringVar(&req.ResumeRunID, "resume", "", "resume an existing run ID")
+	} else {
+		fs.StringVar(&req.RunID, "run-id", "", "exact run whose owned namespace should be deleted")
+	}
 	if err := fs.Parse(remaining); err != nil {
 		return Request{}, err
 	}
@@ -129,6 +136,9 @@ func Parse(args []string) (Request, error) {
 		}
 	}
 	req.Credentials = credentialsFromEnv(fileValues)
+	if strings.TrimSpace(req.ClusterServer) == "" {
+		req.ClusterServer = envValue("KONFLUX_CLUSTER_SERVER", fileValues)
+	}
 	return req, req.Validate()
 }
 
@@ -180,42 +190,62 @@ func (r Request) Validate() error {
 	if strings.TrimSpace(r.ClusterServer) == "" {
 		return errors.New("--cluster-server is required")
 	}
-	if r.Command == CommandRun && r.Provider != ProviderGitHub && r.Provider != ProviderGitLab {
-		return fmt.Errorf("unsupported provider %q", r.Provider)
-	}
-	if r.Command == CommandRun && strings.TrimSpace(r.StateDir) == "" {
+	if (r.Command == CommandRun || r.Command == CommandCleanup) && strings.TrimSpace(r.StateDir) == "" {
 		return errors.New("state directory is required")
 	}
-	if r.Command == CommandRun && r.ResumeRunID != "" && !validRunID(r.ResumeRunID) {
-		return fmt.Errorf("invalid resume run ID %q", r.ResumeRunID)
-	}
-	if r.Command == CommandRun && len(r.ComponentPaths) != len(DefaultComponentPaths) {
-		return fmt.Errorf("exactly %d component paths are required", len(DefaultComponentPaths))
-	}
-	wantRepository := DefaultGitHubRepo
-	if r.Provider == ProviderGitLab {
-		wantRepository = DefaultGitLabRepo
-	}
-	if r.Command == CommandRun && r.SourceRepository != wantRepository {
-		return fmt.Errorf("%s fixture must be %s", r.Provider, wantRepository)
-	}
-	if r.TenantNamespace == "" || r.ApplicationName == "" {
-		return errors.New("tenant namespace and application are required")
-	}
-	for _, timeout := range []struct {
-		name  string
-		value time.Duration
-	}{
-		{"preflight", r.Timeouts.Preflight}, {"trigger", r.Timeouts.Trigger}, {"build", r.Timeouts.Build},
-	} {
-		if timeout.value <= 0 {
-			return fmt.Errorf("%s timeout must be positive", timeout.name)
+	switch r.Command {
+	case CommandCleanup:
+		if !validRunID(r.RunID) {
+			return fmt.Errorf("cleanup requires a valid --run-id")
 		}
-	}
-	if r.Command == CommandRun {
+		return nil
+	case CommandRun:
+		if r.Provider != ProviderGitHub && r.Provider != ProviderGitLab && r.Provider != ProviderBoth {
+			return fmt.Errorf("unsupported provider %q", r.Provider)
+		}
+		if r.ResumeRunID != "" && !validRunID(r.ResumeRunID) {
+			return fmt.Errorf("invalid resume run ID %q", r.ResumeRunID)
+		}
+		if r.Provider == ProviderBoth && r.ResumeRunID != "" {
+			return errors.New("run both cannot resume an existing run")
+		}
+		if len(r.ComponentPaths) != len(DefaultComponentPaths) {
+			return fmt.Errorf("exactly %d component paths are required", len(DefaultComponentPaths))
+		}
+		if r.Provider == ProviderBoth {
+			if r.SourceRepository != DefaultGitHubRepo || r.TenantNamespace != DefaultGitHubTenantNamespace {
+				return errors.New("run both uses the fixed provider fixtures and namespaces")
+			}
+			if strings.TrimSpace(r.ApplicationName) == "" {
+				return errors.New("application is required")
+			}
+		} else {
+			wantRepository := DefaultGitHubRepo
+			if r.Provider == ProviderGitLab {
+				wantRepository = DefaultGitLabRepo
+			}
+			if r.SourceRepository != wantRepository {
+				return fmt.Errorf("%s fixture must be %s", r.Provider, wantRepository)
+			}
+			if r.TenantNamespace == "" || r.ApplicationName == "" {
+				return errors.New("tenant namespace and application are required")
+			}
+		}
+		for _, timeout := range []struct {
+			name  string
+			value time.Duration
+		}{
+			{"preflight", r.Timeouts.Preflight}, {"trigger", r.Timeouts.Trigger}, {"build", r.Timeouts.Build},
+		} {
+			if timeout.value <= 0 {
+				return fmt.Errorf("%s timeout must be positive", timeout.name)
+			}
+		}
 		if err := validateProviderCredentials(r.Provider, r.Credentials); err != nil {
 			return err
 		}
+	default:
+		return fmt.Errorf("unsupported command %q", r.Command)
 	}
 	return nil
 }
@@ -228,6 +258,13 @@ func validateProviderCredentials(provider string, credentials Credentials) error
 			missing = append(missing, "GITHUB_TOKEN")
 		}
 	case ProviderGitLab:
+		if strings.TrimSpace(credentials.GitLabToken) == "" {
+			missing = append(missing, "GITLAB_BOT_TOKEN")
+		}
+	case ProviderBoth:
+		if strings.TrimSpace(credentials.GitHubToken) == "" {
+			missing = append(missing, "GITHUB_TOKEN")
+		}
 		if strings.TrimSpace(credentials.GitLabToken) == "" {
 			missing = append(missing, "GITLAB_BOT_TOKEN")
 		}

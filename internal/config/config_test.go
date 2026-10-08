@@ -32,6 +32,28 @@ var _ = Describe("Parse", func() {
 		Expect(githubRequest.TenantNamespace).NotTo(Equal(gitlabRequest.TenantNamespace))
 	})
 
+	It("accepts both fixed fixture providers", func() {
+		GinkgoT().Setenv("GITHUB_TOKEN", "github-token")
+		GinkgoT().Setenv("GITLAB_BOT_TOKEN", "gitlab-token")
+		got, err := Parse([]string{"run", "both", "--cluster-server", "https://api.example"})
+		Expect(err).ShouldNot(HaveOccurred())
+		Expect(got.Provider).Should(Equal(ProviderBoth))
+	})
+
+	It("requires credentials for both providers", func() {
+		GinkgoT().Setenv("GITHUB_TOKEN", "github-token")
+		GinkgoT().Setenv("GITLAB_BOT_TOKEN", "")
+		_, err := Parse([]string{"run", "both", "--cluster-server", "https://api.example"})
+		Expect(err).Should(MatchError(ContainSubstring("GITLAB_BOT_TOKEN")))
+	})
+
+	It("parses cleanup by exact run ID", func() {
+		got, err := Parse([]string{"cleanup", "--run-id", "run-123", "--cluster-server", "https://api.example"})
+		Expect(err).ShouldNot(HaveOccurred())
+		Expect(got.Command).Should(Equal(CommandCleanup))
+		Expect(got.RunID).Should(Equal("run-123"))
+	})
+
 	It("rejects a non-canonical fixture", func() {
 		GinkgoT().Setenv("GITHUB_TOKEN", "token")
 		_, err := Parse([]string{"run", "github", "--cluster-server", "https://api.example", "--source-repository", "https://github.com/other/repo"})
@@ -73,6 +95,7 @@ var _ = Describe("Parse", func() {
 		Entry("invalid duration", []string{"run", "github", "--cluster-server", "https://api.example", "--build-timeout", "0s"}),
 		Entry("empty fixture", []string{"run", "github", "--cluster-server", "https://api.example", "--application", ""}),
 		Entry("invalid resume", []string{"run", "github", "--cluster-server", "https://api.example", "--resume", "bad/run"}),
+		Entry("cleanup requires run ID", []string{"cleanup", "--cluster-server", "https://api.example"}),
 	)
 
 	It("requires positive timeouts", func() {
