@@ -69,7 +69,7 @@ func Prepare(args []string) ([]string, error) {
 
 func needsSetup(command string) bool {
 	switch command {
-	case "run":
+	case "run", "cleanup":
 		return true
 	default:
 		return false

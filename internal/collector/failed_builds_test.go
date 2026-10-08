@@ -3,6 +3,7 @@ package collector_test
 import (
 	"context"
 	"os"
+	"path/filepath"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -100,8 +101,8 @@ var _ = Describe("CollectFailedBuildLogs", func() {
 		Expect(logs[0].TaskName).To(Equal("build-container"))
 		Expect(logs[0].StepContainer).To(Equal("step-build"))
 		Expect(logs[0].ExitCode).To(Equal(int64(1)))
-		Expect(logs[0].LogPath).NotTo(BeEmpty())
-		_, err = os.ReadFile(logs[0].LogPath)
+		Expect(logs[0].LogPath).To(Equal(filepath.Join("failed-builds", "build-task-amd64_step-build.log")))
+		_, err = os.ReadFile(filepath.Join(outputDir, logs[0].LogPath))
 		Expect(err).NotTo(HaveOccurred())
 	})
 

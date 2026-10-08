@@ -33,7 +33,14 @@ resources.
 cd konflux-test
 ./bin/konflux-test run github --env-file .konflux-test.env
 ./bin/konflux-test run gitlab --env-file .konflux-test.env
+./bin/konflux-test run both --env-file .konflux-test.env
+./bin/konflux-test cleanup --run-id <run-id> --env-file .konflux-test.env
 ```
+
+`run both` starts the fixed GitHub and GitLab fixture runs concurrently. Each
+uses its own persistent tenant namespace and run ID. `cleanup` loads the run
+manifest to select its recorded namespace and cluster, verifies both exact
+ownership labels, and asks for confirmation before deleting the namespace.
 
 Each run creates one tenant namespace labeled with
 `app.konflux-ci.org/managed-by=konflux-test` and
@@ -50,9 +57,9 @@ After failure, it saves and verifies required artifacts before prompting.
 ## Environment configuration
 
 Copy `.konflux-test.env.example` to `.konflux-test.env`. Keep the copy local.
-Set `GITHUB_TOKEN` for GitHub runs. Set `GITLAB_BOT_TOKEN` and, when needed,
-`GITLAB_API_URL` for GitLab runs. Set `KUBECONFIG` and the explicit
-`KONFLUX_CLUSTER_SERVER` guard in the same file.
+Set `GITHUB_TOKEN` for GitHub runs and `GITLAB_BOT_TOKEN` for GitLab runs. Both
+tokens are required for `run both`. Set `GITLAB_API_URL` when needed. Set
+`KUBECONFIG` and the explicit `KONFLUX_CLUSTER_SERVER` guard in the same file.
 
 The parser reads `KEY=VALUE` lines. It does not execute the environment file.
 
@@ -60,12 +67,14 @@ The parser reads `KEY=VALUE` lines. It does not execute the environment file.
 
 Runtime evidence is stored under `.konflux-test-runs/`.
 
-- Each run directory is named `github-run-<hh:mm_d.m.y>` or
-  `gitlab-run-<hh:mm_d.m.y>`. A combined execution uses
-  `combined-run-<hh:mm_d.m.y>`.
-- `latest/` is a directory containing the newest completed run's artifacts.
-  A new run does not replace it at creation or failure. Replacement occurs
-  only after a newer run completes.
+- Each run directory includes its provider, start time, and run ID, for example
+  `github-run-<hh:mm_d.m.y>_<run-id>`.
+- `latest/` resolves to the most recently started run directory from run
+  creation. It is a relative symlink, exposes artifacts as they are written,
+  and continues to point to that run through success or failure. The next run
+  atomically changes the pointer; prior run-specific directories remain
+  intact. If an older directory-form `latest` cannot be atomically exchanged
+  on the current filesystem, the tool preserves it and refuses to switch.
 - Each run stores `manifest.json` and `status.json`.
 - Failed runs store `session/manifest.json`, workload snapshots for
   Applications, Components, PipelineRuns, TaskRuns, and Pods, plus

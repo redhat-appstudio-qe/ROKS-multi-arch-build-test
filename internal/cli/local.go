@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"strings"
+	"sync"
 
 	"github.com/redhat-appstudio/konflux-test/internal/cleanup"
 	"github.com/redhat-appstudio/konflux-test/internal/cluster"
@@ -21,7 +23,20 @@ type LiveRunner struct {
 	Prompt workflow.Confirmation
 }
 
-func NewLiveRunner() Runner { return LiveRunner{Prompt: NewInteractiveConfirmationPrompt()} }
+func NewLiveRunner() Runner {
+	return LiveRunner{Prompt: &serializedConfirmation{prompt: NewInteractiveConfirmationPrompt()}}
+}
+
+type serializedConfirmation struct {
+	mu     sync.Mutex
+	prompt workflow.Confirmation
+}
+
+func (p *serializedConfirmation) Confirm(ctx context.Context, message string) (bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.prompt.Confirm(ctx, message)
+}
 
 func (runner LiveRunner) Run(ctx context.Context, request config.Request) error {
 	clients, err := cluster.NewClientSet("")
@@ -64,11 +79,76 @@ func (runner LiveRunner) Run(ctx context.Context, request config.Request) error 
 	if err := (Lifecycle{Store: store, Namespace: stage.Namespace, Collector: collector.Collector{StateDir: request.StateDir}, Prompt: stage.Prompt, Sources: sources}).Finalize(ctx, manifest, nil); err != nil {
 		return fmt.Errorf("run %s completed but finalization failed: %w", manifest.RunID, err)
 	}
-	if err := store.PublishLatest(manifest); err != nil {
-		return fmt.Errorf("run %s completed but latest artifact publication failed: %w", manifest.RunID, err)
-	}
 	fmt.Printf("completed run %s at phase %s\n", manifest.RunID, manifest.Phase)
 	return nil
+}
+
+func (runner LiveRunner) Cleanup(ctx context.Context, request config.Request) error {
+	if request.Command != config.CommandCleanup {
+		return fmt.Errorf("unsupported cleanup command %q", request.Command)
+	}
+	clients, err := cluster.NewClientSet("")
+	if err != nil {
+		return err
+	}
+	if normalizeServer(clients.Config.Host) != normalizeServer(request.ClusterServer) {
+		return fmt.Errorf("cluster server mismatch: requested %s, active %s", request.ClusterServer, clients.Config.Host)
+	}
+	store := evidence.NewManifestStore(request.StateDir)
+	return cleanupRun(ctx, request, store, cleanup.NamespaceService{Dynamic: clients.Dynamic}, runner.Prompt)
+}
+
+func cleanupRun(ctx context.Context, request config.Request, store evidence.ManifestStore, namespaceService cleanup.NamespaceService, prompt workflow.Confirmation) error {
+	if strings.TrimSpace(request.RunID) == "" {
+		return fmt.Errorf("cleanup requires an exact run ID")
+	}
+	manifest, err := store.Load(request.RunID)
+	if err != nil {
+		return fmt.Errorf("load run %s: %w", request.RunID, err)
+	}
+	if manifest.RunID != request.RunID {
+		return fmt.Errorf("run identity mismatch: requested %q, found %q", request.RunID, manifest.RunID)
+	}
+	if normalizeServer(manifest.TargetClusterServer) != normalizeServer(request.ClusterServer) {
+		return fmt.Errorf("run %s belongs to cluster %s, not requested cluster %s", request.RunID, manifest.TargetClusterServer, request.ClusterServer)
+	}
+	if _, err := (collector.Collector{StateDir: request.StateDir}).VerifySavedArtifacts(request.RunID, manifest); err != nil {
+		return fmt.Errorf("refusing cleanup without verified saved artifacts for run %s: %w", request.RunID, err)
+	}
+	namespace := manifest.Fixture.TenantNamespace
+	if strings.TrimSpace(namespace) == "" {
+		return fmt.Errorf("run %s has no tenant namespace", request.RunID)
+	}
+	info, err := namespaceService.Inspect(ctx, namespace)
+	if err != nil {
+		return fmt.Errorf("inspect namespace %s for run %s: %w", namespace, request.RunID, err)
+	}
+	if info.Name != namespace || info.Labels[cleanup.ManagedByLabel] != cleanup.ManagedByValue || info.RunID != request.RunID {
+		return fmt.Errorf("refusing to clean namespace %s without exact konflux-test ownership for run %s", namespace, request.RunID)
+	}
+	if prompt == nil {
+		return fmt.Errorf("cleanup requires explicit confirmation")
+	}
+	approved, err := prompt.Confirm(ctx, fmt.Sprintf("Delete tenant namespace %s owned by run %s", namespace, request.RunID))
+	if err != nil {
+		return err
+	}
+	if !approved {
+		fmt.Printf("retained tenant namespace %s\n", namespace)
+		return nil
+	}
+	if err := namespaceService.Delete(ctx, namespace, request.RunID); err != nil {
+		return err
+	}
+	if err := namespaceService.WaitDeleted(ctx, namespace); err != nil {
+		return err
+	}
+	fmt.Printf("deleted tenant namespace %s from run %s\n", namespace, request.RunID)
+	return nil
+}
+
+func normalizeServer(server string) string {
+	return strings.TrimRight(strings.TrimSpace(server), "/")
 }
 
 type Lifecycle struct {
@@ -117,9 +197,11 @@ func (l Lifecycle) Finalize(ctx context.Context, manifest model.RunManifest, run
 		if sources == nil && l.Namespace.Dynamic != nil {
 			sources = collector.KubernetesSources(l.Namespace.Dynamic, namespace, manifest.RunID)
 		}
-		if _, err := l.Collector.Collect(ctx, manifest.RunID, manifest, sources); err != nil {
+		if _, err := l.Collector.CollectAndVerify(ctx, manifest.RunID, manifest, sources); err != nil {
 			return err
 		}
+	} else if l.Prompt != nil {
+		return fmt.Errorf("state directory is required to verify saved artifacts before cleanup")
 	}
 	if l.Prompt == nil {
 		return nil

@@ -217,21 +217,25 @@ func (s *LiveStage) VerifyBuilds(ctx context.Context, manifest *model.RunManifes
 	if namespace == "" {
 		return fmt.Errorf("run manifest does not contain a tenant namespace")
 	}
-	identities, err := waitForBuildMatches(ctx, s.Request.Timeouts.Trigger, s.Request.Timeouts.Build, 10*time.Second, namespace, manifest.TriggerCommits, func(ctx context.Context) ([]unstructured.Unstructured, error) {
+	identities, err := waitForBuildTaskRuns(ctx, s.Request.Timeouts.Trigger, s.Request.Timeouts.Build, 10*time.Second, namespace, manifest.TriggerCommits, func(ctx context.Context) ([]unstructured.Unstructured, []unstructured.Unstructured, error) {
 		components, err := s.Clients.Dynamic.Resource(cluster.ComponentGVR).Namespace(namespace).List(ctx, metav1.ListOptions{})
 		if err != nil {
-			return nil, fmt.Errorf("list components while waiting for builds: %w", err)
+			return nil, nil, fmt.Errorf("list components while waiting for builds: %w", err)
 		}
 		for index := range components.Items {
 			if err := paCStatusError(&components.Items[index]); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
-		list, err := s.Clients.Dynamic.Resource(PipelineRunGVR).Namespace(namespace).List(ctx, metav1.ListOptions{})
+		pipelineRuns, err := s.Clients.Dynamic.Resource(PipelineRunGVR).Namespace(namespace).List(ctx, metav1.ListOptions{})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return list.Items, nil
+		taskRuns, err := s.Clients.Dynamic.Resource(cluster.TaskRunGVR).Namespace(namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, nil, err
+		}
+		return pipelineRuns.Items, taskRuns.Items, nil
 	})
 	if err != nil {
 		var pipelineRunError *PipelineRunFailedError
@@ -387,6 +391,113 @@ func waitForBuildMatches(ctx context.Context, triggerTimeout, buildTimeout, inte
 		case <-timer.C:
 		}
 	}
+}
+
+func waitForBuildTaskRuns(ctx context.Context, triggerTimeout, buildTimeout, interval time.Duration, namespace string, commits []model.TriggerCommit, list func(context.Context) ([]unstructured.Unstructured, []unstructured.Unstructured, error)) ([]model.PipelineRunIdentity, error) {
+	if triggerTimeout <= 0 {
+		return nil, fmt.Errorf("trigger timeout must be positive")
+	}
+	if buildTimeout <= 0 {
+		return nil, fmt.Errorf("build timeout must be positive")
+	}
+	if interval <= 0 {
+		return nil, fmt.Errorf("build polling interval must be positive")
+	}
+	triggerCtx, cancelTrigger := context.WithTimeout(ctx, triggerTimeout)
+	defer cancelTrigger()
+	for {
+		pipelineRuns, taskRuns, err := list(triggerCtx)
+		if err != nil {
+			return nil, err
+		}
+		identities, pending, err := matchBuildTaskRuns(pipelineRuns, taskRuns, commits)
+		if err != nil {
+			return nil, err
+		}
+		if !pending {
+			return identities, nil
+		}
+		if allBuildsAppeared(pipelineRuns, commits) {
+			break
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-triggerCtx.Done():
+			timer.Stop()
+			return nil, noPipelineRunError(namespace, commits, pipelineRuns)
+		case <-timer.C:
+		}
+	}
+
+	buildCtx, cancelBuild := context.WithTimeout(ctx, buildTimeout)
+	defer cancelBuild()
+	for {
+		pipelineRuns, taskRuns, err := list(buildCtx)
+		if err != nil {
+			return nil, err
+		}
+		identities, pending, err := matchBuildTaskRuns(pipelineRuns, taskRuns, commits)
+		if err != nil {
+			return nil, err
+		}
+		if !pending {
+			return identities, nil
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-buildCtx.Done():
+			timer.Stop()
+			return nil, fmt.Errorf("timed out waiting for Buildah TaskRuns after trigger: %w", buildCtx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func matchBuildTaskRuns(pipelineRuns, taskRuns []unstructured.Unstructured, commits []model.TriggerCommit) ([]model.PipelineRunIdentity, bool, error) {
+	identities := make([]model.PipelineRunIdentity, 0, len(commits))
+	for _, commit := range commits {
+		candidates := matchingPipelineRuns(pipelineRuns, commit)
+		if len(candidates) == 0 {
+			return identities, true, nil
+		}
+		if len(candidates) > 1 {
+			return nil, false, fmt.Errorf("ambiguous PipelineRuns for component %s after trigger %s", commit.Component, commit.SHA)
+		}
+		candidate := candidates[0]
+		buildTasks := buildTaskRunsForPipelineRun(taskRuns, candidate)
+		if len(buildTasks) == 0 {
+			return identities, true, nil
+		}
+		for _, taskRun := range buildTasks {
+			status := pipelineRunConditionStatus(taskRun)
+			if status == "False" {
+				return nil, false, &PipelineRunFailedError{Namespace: candidate.GetNamespace(), Name: candidate.GetName(), Component: commit.Component}
+			}
+			if status != "True" {
+				return identities, true, nil
+			}
+		}
+		identity := identityFromObject(candidate, commit.Component, pipelineRunSHA(candidate))
+		identity.Succeeded = true
+		identities = append(identities, identity)
+	}
+	return identities, false, nil
+}
+
+func buildTaskRunsForPipelineRun(taskRuns []unstructured.Unstructured, pipelineRun *unstructured.Unstructured) []*unstructured.Unstructured {
+	result := make([]*unstructured.Unstructured, 0)
+	for index := range taskRuns {
+		taskRun := &taskRuns[index]
+		owned := cluster.OwnedByPipelineRun(taskRun, string(pipelineRun.GetUID()), pipelineRun.GetName())
+		if !owned && taskRun.GetLabels()["tekton.dev/pipelineRun"] == pipelineRun.GetName() {
+			owned = true
+		}
+		if !cluster.IsBuildTaskRun(taskRun) || !owned {
+			continue
+		}
+		result = append(result, taskRun)
+	}
+	return result
 }
 
 func matchBuildsObjects(objects []unstructured.Unstructured, commits []model.TriggerCommit) ([]model.PipelineRunIdentity, bool, error) {

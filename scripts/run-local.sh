@@ -3,7 +3,7 @@
 set -euo pipefail
 
 usage() {
-    printf 'Usage: %s --setup [env-file] [github|gitlab]\n' "$(basename "$0")" >&2
+    printf 'Usage: %s --setup [env-file] [github|gitlab|both]\n' "$(basename "$0")" >&2
 }
 
 trim() {
@@ -73,7 +73,7 @@ if [[ $# -gt 2 ]]; then
 fi
 
 case "$provider" in
-    github|gitlab|'') ;;
+    github|gitlab|both|'') ;;
     *)
         printf 'Unsupported provider: %s\n' "$provider" >&2
         usage

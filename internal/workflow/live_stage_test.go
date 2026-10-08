@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -124,6 +125,23 @@ var _ = Describe("LiveStage", func() {
 		Expect(got).To(Equal(want))
 	})
 
+	It("derives component context and Dockerfile from configured paths", func() {
+		for _, test := range []struct {
+			path        string
+			wantContext string
+			wantFile    string
+		}{
+			{path: "web-server/Dockerfile", wantContext: "web-server", wantFile: "Dockerfile"},
+			{path: "history-worker/Dockerfile", wantContext: "history-worker", wantFile: "Dockerfile"},
+			{path: "frontend/Dockerfile", wantContext: "frontend", wantFile: "Dockerfile"},
+			{path: "Dockerfile", wantContext: ".", wantFile: "Dockerfile"},
+		} {
+			got := componentSpec("component", "https://github.com/example/repository", "main", test.path)
+			Expect(got.Context).To(Equal(test.wantContext), test.path)
+			Expect(got.Dockerfile).To(Equal(test.wantFile), test.path)
+		}
+	})
+
 	It("polls until pipeline runs succeed", func() {
 		commits := []model.TriggerCommit{{Component: "mathwizz-web-server", SHA: "sha-1"}}
 		calls := 0
@@ -189,6 +207,19 @@ var _ = Describe("LiveStage", func() {
 		Expect(err).To(MatchError(ContainSubstring("ambiguous")))
 	})
 
+	It("waits for Buildah TaskRuns without waiting for validation TaskRuns", func() {
+		commit := model.TriggerCommit{Component: "mathwizz-web-server", SHA: "observed-sha", CreatedAt: time.Now().UTC()}
+		pipeline := pipelineRun("run-build", "mathwizz-web-server", "observed-sha", "uid-build", "Unknown")
+		build := buildTaskRunForWorkflow("build-task", "uid-build", "True", "buildah-oci-ta")
+		validation := buildTaskRunForWorkflow("validation-task", "uid-build", "False", "sast-shell-check")
+		identities, err := waitForBuildTaskRuns(context.Background(), time.Second, time.Second, time.Millisecond, "mathwizz-test", []model.TriggerCommit{commit}, func(context.Context) ([]unstructured.Unstructured, []unstructured.Unstructured, error) {
+			return []unstructured.Unstructured{pipeline}, []unstructured.Unstructured{build, validation}, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(identities).To(HaveLen(1))
+		Expect(identities[0].Name).To(Equal("run-build"))
+	})
+
 	It("collects failed container logs", func() {
 		pipeline := pipelineRun("run-1", "mathwizz-web-server", "sha-1", "uid-1", "False")
 		pipeline.SetNamespace("tenant")
@@ -215,7 +246,8 @@ var _ = Describe("LiveStage", func() {
 		Expect(errors.As(err, &pipelineRunError)).To(BeTrue())
 		Expect(manifest.FailedBuildLogs).To(HaveLen(1))
 		Expect(manifest.FailedBuildLogs[0].LogPath).NotTo(BeEmpty())
-		_, err = os.Stat(manifest.FailedBuildLogs[0].LogPath)
+		Expect(manifest.FailedBuildLogs[0].LogPath).To(Equal(filepath.Join("failed-builds", "build-task_step-build.log")))
+		_, err = os.Stat(filepath.Join(stateDir, manifest.ArtifactDirectory, manifest.FailedBuildLogs[0].LogPath))
 		Expect(err).NotTo(HaveOccurred())
 	})
 
@@ -282,7 +314,11 @@ func failedTaskRunForWorkflow() *unstructured.Unstructured {
 		"apiVersion": "tekton.dev/v1", "kind": "TaskRun",
 		"metadata": map[string]any{
 			"name": "build-task", "namespace": "tenant",
-			"labels": map[string]any{"tekton.dev/pipelineRun": "run-1", "tekton.dev/pipelineTask": "build-container"},
+			"labels": map[string]any{
+				"tekton.dev/pipelineRun":  "run-1",
+				"tekton.dev/pipelineTask": "build-container",
+				"tekton.dev/task":         "buildah-oci-ta",
+			},
 		},
 		"status": map[string]any{
 			"podName":    "build-pod",
@@ -312,6 +348,32 @@ func pipelineRun(name, component, sha, uid, status string) unstructured.Unstruct
 				"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
 			}},
 		},
+	}}
+}
+
+func buildTaskRunForWorkflow(name, ownerUID, status, task string) unstructured.Unstructured {
+	pipelineTask := "build-container"
+	if task == "sast-shell-check" {
+		pipelineTask = task
+	}
+	return unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "tekton.dev/v1",
+		"kind":       "TaskRun",
+		"metadata": map[string]any{
+			"name":      name,
+			"namespace": "mathwizz-test",
+			"labels": map[string]any{
+				"tekton.dev/pipelineTask": pipelineTask,
+				"tekton.dev/task":         task,
+			},
+			"ownerReferences": []any{map[string]any{
+				"apiVersion": "tekton.dev/v1",
+				"kind":       "PipelineRun",
+				"name":       "run-build",
+				"uid":        ownerUID,
+			}},
+		},
+		"status": map[string]any{"conditions": []any{map[string]any{"type": "Succeeded", "status": status}}},
 	}}
 }
 

@@ -70,13 +70,37 @@ var _ = Describe("Lifecycle", func() {
 		client := fake.NewSimpleDynamicClient(runtime.NewScheme(), namespaceObject("tenant", "run-1"))
 		prompt := &fakePrompt{approved: false}
 		manifest := model.RunManifest{RunID: "run-1", Phase: model.PhaseCompleted, Fixture: model.FixtureIdentity{TenantNamespace: "tenant"}}
-		lifecycle := Lifecycle{Store: evidence.NewManifestStore(filepath.Join(stateDir, "state")), Namespace: cleanup.NamespaceService{Dynamic: client}, Prompt: prompt}
+		store := evidence.NewManifestStore(stateDir)
+		Expect(store.Create(&manifest)).Should(Succeed())
+		lifecycle := Lifecycle{Store: store, Namespace: cleanup.NamespaceService{Dynamic: client}, Collector: collector.Collector{StateDir: stateDir}, Prompt: prompt, Sources: lifecycleTestSources()}
 		if err := lifecycle.Finalize(context.Background(), manifest, nil); err != nil {
 			Expect(err).NotTo(HaveOccurred())
 		}
 		Expect(prompt.calls).To(Equal(1))
+		report, err := collector.ReadReport(filepath.Join(store.RunDirFor(manifest), "collection-report.json"))
+		Expect(err).ShouldNot(HaveOccurred())
+		Expect(report.RunID).To(Equal("run-1"))
 		if _, err := lifecycle.Namespace.Inspect(context.Background(), "tenant"); err != nil {
 			Fail("declined cleanup deleted namespace")
+		}
+	})
+
+	It("suppresses successful cleanup when required artifact collection is incomplete", func() {
+		stateDir := GinkgoT().TempDir()
+		client := fake.NewSimpleDynamicClient(runtime.NewScheme(), namespaceObject("tenant", "run-1"))
+		prompt := &fakePrompt{approved: false}
+		manifest := model.RunManifest{RunID: "run-1", Phase: model.PhaseCompleted, Fixture: model.FixtureIdentity{TenantNamespace: "tenant"}}
+		store := evidence.NewManifestStore(stateDir)
+		Expect(store.Create(&manifest)).Should(Succeed())
+		sources := lifecycleTestSources()
+		sources[0].Collect = func(context.Context, string) error { return errors.New("api unavailable") }
+		lifecycle := Lifecycle{Store: store, Namespace: cleanup.NamespaceService{Dynamic: client}, Collector: collector.Collector{StateDir: stateDir}, Prompt: prompt, Sources: sources}
+
+		err := lifecycle.Finalize(context.Background(), manifest, nil)
+		Expect(err).Should(MatchError(ContainSubstring("workload/applications.json")))
+		Expect(prompt.calls).To(Equal(0))
+		if _, err := lifecycle.Namespace.Inspect(context.Background(), "tenant"); err != nil {
+			Fail("incomplete successful-run artifacts deleted namespace")
 		}
 	})
 })
@@ -87,6 +111,13 @@ func lifecycleTestSources() []collector.Source {
 	for _, path := range sources[1 : len(sources)-1] {
 		path := path
 		result = append(result, collector.Source{Name: path, Path: path, Collect: func(_ context.Context, root string) error {
+			if path == "workload/taskruns.json" {
+				artifactPath := filepath.Join(root, path)
+				if err := os.MkdirAll(filepath.Dir(artifactPath), 0o750); err != nil {
+					return err
+				}
+				return os.WriteFile(artifactPath, []byte("{\"items\":[]}\n"), 0o640)
+			}
 			return writeLifecycleArtifact(filepath.Join(root, path))
 		}})
 	}
