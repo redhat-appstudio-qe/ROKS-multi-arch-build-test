@@ -4,6 +4,7 @@ package evidence
 
 import "golang.org/x/sys/unix"
 
+// exchangeLatestPaths atomically exchanges source and destination when Renameat2 supports it.
 func exchangeLatestPaths(source, destination string) (bool, error) {
 	err := unix.Renameat2(unix.AT_FDCWD, source, unix.AT_FDCWD, destination, unix.RENAME_EXCHANGE)
 	if err == unix.ENOSYS || err == unix.EINVAL || err == unix.EOPNOTSUPP {

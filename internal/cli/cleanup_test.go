@@ -199,16 +199,19 @@ type cleanupTestPrompt struct {
 	message  string
 }
 
+// Confirm records the prompt message and returns the configured approval.
 func (p *cleanupTestPrompt) Confirm(_ context.Context, message string) (bool, error) {
 	p.calls++
 	p.message = message
 	return p.approved, nil
 }
 
+// cleanupTestRequest builds a cleanup request for runID and stateDir.
 func cleanupTestRequest(runID, stateDir string) config.Request {
 	return config.Request{Command: config.CommandCleanup, RunID: runID, ClusterServer: "https://api.example", StateDir: stateDir}
 }
 
+// cleanupTestStore creates a completed run with verified required artifacts.
 func cleanupTestStore() evidence.ManifestStore {
 	store := evidence.NewManifestStore(GinkgoT().TempDir())
 	manifest := model.RunManifest{
@@ -224,6 +227,7 @@ func cleanupTestStore() evidence.ManifestStore {
 	return store
 }
 
+// cleanupTestFailedStore creates a failed run with a retained build log and verified artifacts.
 func cleanupTestFailedStore() evidence.ManifestStore {
 	store := evidence.NewManifestStore(GinkgoT().TempDir())
 	manifest := model.RunManifest{
@@ -243,6 +247,7 @@ func cleanupTestFailedStore() evidence.ManifestStore {
 	return store
 }
 
+// cleanupTestClient returns a fake client seeded with a tenant namespace and cleanup resource kinds.
 func cleanupTestClient(runID, managedBy string) *fake.FakeDynamicClient {
 	namespace := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1",

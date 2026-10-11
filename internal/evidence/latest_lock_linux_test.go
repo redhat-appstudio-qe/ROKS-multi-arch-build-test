@@ -22,6 +22,7 @@ const (
 	latestLockRunEnv  = "KONFLUX_TEST_LATEST_LOCK_RUN"
 )
 
+// TestSetLatestWaitsForCrossProcessLock verifies that concurrent latest updates wait for the file lock.
 func TestSetLatestWaitsForCrossProcessLock(t *testing.T) {
 	if root := os.Getenv(latestLockRootEnv); root != "" {
 		fd, err := unix.Open(filepath.Join(root, ".latest.lock"), unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
@@ -157,6 +158,7 @@ func TestSetLatestWaitsForCrossProcessLock(t *testing.T) {
 	}
 }
 
+// flockWaiterPresent reports whether pid is queued for a flock lock in /proc/locks.
 func flockWaiterPresent(pid int) (bool, error) {
 	data, err := os.ReadFile("/proc/locks")
 	if err != nil {

@@ -14,14 +14,20 @@ import (
 const TriggerCommentFormat = "# konflux-test trigger %s %d"
 
 type Confirmation interface {
+	// Confirm requests approval for the supplied action description.
 	Confirm(context.Context, string) (bool, error)
 }
 
 type Stage interface {
+	// Preflight validates cluster identity, access, and scheduling prerequisites.
 	Preflight(context.Context, *model.RunManifest) error
+	// EnsureFixture validates and prepares the run's tenant fixture resources.
 	EnsureFixture(context.Context, *model.RunManifest) error
+	// TriggerComponents updates fixture files to trigger builds and records commits.
 	TriggerComponents(context.Context, *model.RunManifest) error
+	// VerifyBuilds waits for successful builds and records their PipelineRuns.
 	VerifyBuilds(context.Context, *model.RunManifest) error
+	// VerifyBuildOutputs records evidence for the expected build architectures.
 	VerifyBuildOutputs(context.Context, *model.RunManifest) error
 }
 
@@ -47,6 +53,7 @@ type Runner struct {
 	Now   func() time.Time
 }
 
+// Run creates or resumes a manifest and advances it through each workflow stage.
 func (r Runner) Run(ctx context.Context, options Options) (model.RunManifest, error) {
 	if r.Stage == nil {
 		return model.RunManifest{}, fmt.Errorf("workflow stage is required")
@@ -117,6 +124,7 @@ func (r Runner) Run(ctx context.Context, options Options) (model.RunManifest, er
 	return manifest, nil
 }
 
+// shouldSkip reports whether a step precedes the current phase or the run is terminal.
 func shouldSkip(current, target model.Phase, index int, _ []struct {
 	phase   model.Phase
 	timeout time.Duration
@@ -136,6 +144,7 @@ func shouldSkip(current, target model.Phase, index int, _ []struct {
 	return index < start[current] || target == ""
 }
 
+// contextWithTimeout applies a deadline when timeout is positive.
 func contextWithTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if timeout <= 0 {
 		return parent, func() {}
@@ -143,10 +152,12 @@ func contextWithTimeout(parent context.Context, timeout time.Duration) (context.
 	return context.WithTimeout(parent, timeout)
 }
 
+// failureReason derives the failure code for a workflow phase.
 func failureReason(phase model.Phase) string {
 	return strings.TrimSuffix(string(phase), "-wait") + "-failed"
 }
 
+// validRunID reports whether value is a non-empty run identifier with allowed characters.
 func validRunID(value string) bool {
 	if value == "" || len(value) > 100 {
 		return false

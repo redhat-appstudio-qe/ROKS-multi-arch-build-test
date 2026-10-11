@@ -15,10 +15,12 @@ type ConfirmationPrompt struct {
 	Interactive bool
 }
 
+// NewConfirmationPrompt returns a confirmation prompt using the supplied streams and mode.
 func NewConfirmationPrompt(in io.Reader, out io.Writer, interactive bool) ConfirmationPrompt {
 	return ConfirmationPrompt{In: in, Out: out, Interactive: interactive}
 }
 
+// NewInteractiveConfirmationPrompt creates a prompt backed by standard input and output.
 func NewInteractiveConfirmationPrompt() ConfirmationPrompt {
 	interactive := false
 	if info, err := os.Stdin.Stat(); err == nil {
@@ -27,6 +29,7 @@ func NewInteractiveConfirmationPrompt() ConfirmationPrompt {
 	return NewConfirmationPrompt(os.Stdin, os.Stdout, interactive)
 }
 
+// Confirm requests approval and accepts only an explicit y or yes response.
 func (p ConfirmationPrompt) Confirm(ctx context.Context, message string) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err

@@ -138,6 +138,7 @@ var _ = Describe("BuildOutputInspector", func() {
 	})
 })
 
+// buildOutputClientWithPlatformLabels creates a fake client with one successful TaskRun per platform.
 func buildOutputClientWithPlatformLabels(platforms ...string) *fake.FakeDynamicClient {
 	pipeline := pipelineRunObject("build", "tenant", "uid-1", "True")
 	objects := []runtime.Object{pipeline}
@@ -147,10 +148,12 @@ func buildOutputClientWithPlatformLabels(platforms ...string) *fake.FakeDynamicC
 	return fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds(), objects...)
 }
 
+// buildIdentity returns the PipelineRun identity shared by build-output tests.
 func buildIdentity() model.PipelineRunIdentity {
 	return model.PipelineRunIdentity{Namespace: "tenant", Name: "build", UID: "uid-1", Component: "web", SourceSHA: "sha-1"}
 }
 
+// pipelineRunObject creates a PipelineRun fixture with the supplied identity and condition status.
 func pipelineRunObject(name, namespace, uid, status string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "tekton.dev/v1", "kind": "PipelineRun",
@@ -159,10 +162,12 @@ func pipelineRunObject(name, namespace, uid, status string) *unstructured.Unstru
 	}}
 }
 
+// taskRunObject creates a successful Buildah TaskRun fixture for a platform.
 func taskRunObject(name, namespace, ownerUID, platform string) *unstructured.Unstructured {
 	return taskRunWithDeclaredPlatform(name, namespace, ownerUID, platform, "quay.io/example/image", "sha256:"+platform)
 }
 
+// taskRunWithDeclaredPlatform creates a Buildah TaskRun fixture with declared image outputs.
 func taskRunWithDeclaredPlatform(name, namespace, ownerUID, platform, imageURL, digest string) *unstructured.Unstructured {
 	results := []any{map[string]any{"name": "PLATFORM", "value": platform}, map[string]any{"name": "IMAGE_URL", "value": imageURL}}
 	if digest != "" {
@@ -179,6 +184,7 @@ func taskRunWithDeclaredPlatform(name, namespace, ownerUID, platform, imageURL, 
 	}}
 }
 
+// buildahTaskRunWithNoPlatform creates a Buildah TaskRun fixture without a platform result.
 func buildahTaskRunWithNoPlatform(name, namespace, ownerUID, imageURL, digest string) *unstructured.Unstructured {
 	taskRun := taskRunWithDeclaredPlatform(name, namespace, ownerUID, "", imageURL, digest)
 	results := taskRun.Object["status"].(map[string]any)["results"].([]any)
@@ -186,6 +192,7 @@ func buildahTaskRunWithNoPlatform(name, namespace, ownerUID, imageURL, digest st
 	return taskRun
 }
 
+// taskRunWithImageOutputs creates a build-images TaskRun with platform metadata and image outputs.
 func taskRunWithImageOutputs(name, targetPlatform, platformParam, imageURL, digest string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "tekton.dev/v1", "kind": "TaskRun",
@@ -210,6 +217,7 @@ func taskRunWithImageOutputs(name, targetPlatform, platformParam, imageURL, dige
 	}}
 }
 
+// listKinds returns the fake client's list kind names for Tekton resources.
 func listKinds() map[schema.GroupVersionResource]string {
 	return map[schema.GroupVersionResource]string{
 		{Group: "tekton.dev", Version: "v1", Resource: "pipelineruns"}: "PipelineRunList",

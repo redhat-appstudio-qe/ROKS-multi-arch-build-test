@@ -298,6 +298,7 @@ var _ = ginkgo.Describe("Collector", func() {
 	})
 })
 
+// requiredTestSources returns source callbacks that create all baseline artifacts.
 func requiredTestSources() []Source {
 	paths := []string{"workload/applications.json", "workload/components.json", "workload/pipelineruns.json", "workload/taskruns.json", "workload/taskruns/", "workload/pods.json"}
 	sources := make([]Source, 0, len(paths))
@@ -317,6 +318,7 @@ func requiredTestSources() []Source {
 	return sources
 }
 
+// taskRunSnapshotTestSources builds sources containing one TaskRun and its supplied YAML snapshot.
 func taskRunSnapshotTestSources(snapshot []byte) []Source {
 	sources := requiredTestSources()
 	for index := range sources {

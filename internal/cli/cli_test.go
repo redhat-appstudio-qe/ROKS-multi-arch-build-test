@@ -13,6 +13,7 @@ import (
 
 type recordingRunner struct{ command string }
 
+// Run records that the test runner received a run request.
 func (r *recordingRunner) Run(context.Context, config.Request) error {
 	r.command = config.CommandRun
 	return nil
@@ -31,14 +32,17 @@ type cleanupRecordingRunner struct {
 	request      config.Request
 }
 
+// Run provides the no-op run method required by the cleanup test runner.
 func (*cleanupRecordingRunner) Run(context.Context, config.Request) error { return nil }
 
+// Cleanup records the cleanup call and request for dispatcher assertions.
 func (r *cleanupRecordingRunner) Cleanup(_ context.Context, request config.Request) error {
 	r.cleanupCalls++
 	r.request = request
 	return nil
 }
 
+// Run records and signals a provider request, optionally waits for release or cancellation, then returns its configured error.
 func (r *concurrentRecordingRunner) Run(ctx context.Context, request config.Request) error {
 	r.mu.Lock()
 	r.requests = append(r.requests, request)
@@ -56,6 +60,7 @@ func (r *concurrentRecordingRunner) Run(ctx context.Context, request config.Requ
 	return r.failures[request.Provider]
 }
 
+// recorded returns a copy of provider requests recorded by the test runner.
 func (r *concurrentRecordingRunner) recorded() []config.Request {
 	r.mu.Lock()
 	defer r.mu.Unlock()

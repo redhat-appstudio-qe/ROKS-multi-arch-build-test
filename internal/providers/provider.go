@@ -36,11 +36,15 @@ type Commit struct {
 }
 
 type Provider interface {
+	// ValidateFixture verifies and returns the canonical test fixture repository.
 	ValidateFixture(context.Context, FixtureRepository) (FixtureRepository, error)
+	// ReadFile returns the requested file content and its current version metadata.
 	ReadFile(context.Context, FixtureRepository, string, string) (FileVersion, error)
+	// UpdateFile replaces file content only when its current SHA matches expectedSHA.
 	UpdateFile(context.Context, FixtureRepository, string, string, string, string) (Commit, error)
 }
 
+// ParseRepository extracts owner and name from a repository URL.
 func ParseRepository(raw string) (SourceRepository, error) {
 	if strings.TrimSpace(raw) == "" {
 		return SourceRepository{}, fmt.Errorf("repository is required")
@@ -56,6 +60,7 @@ func ParseRepository(raw string) (SourceRepository, error) {
 	return SourceRepository{Owner: parts[len(parts)-2], Name: strings.TrimSuffix(parts[len(parts)-1], ".git"), URL: raw}, nil
 }
 
+// ValidateExpectedSHA rejects an empty or stale expected file version.
 func ValidateExpectedSHA(expected, actual string) error {
 	if strings.TrimSpace(expected) == "" {
 		return fmt.Errorf("expected file version is required")

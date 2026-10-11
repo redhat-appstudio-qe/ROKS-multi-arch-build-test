@@ -35,6 +35,7 @@ type FailedStep struct {
 	ExitCode  int64
 }
 
+// FindFailedStepContainers returns terminated TaskRun steps with non-zero exit codes.
 func FindFailedStepContainers(taskRun *unstructured.Unstructured) []FailedStep {
 	if taskRun == nil {
 		return nil
@@ -64,6 +65,7 @@ func FindFailedStepContainers(taskRun *unstructured.Unstructured) []FailedStep {
 	return failed
 }
 
+// toInt64 converts supported numeric values to int64 and reports whether conversion succeeded.
 func toInt64(value any) (int64, bool) {
 	switch value := value.(type) {
 	case int64:
@@ -77,6 +79,7 @@ func toInt64(value any) (int64, bool) {
 	}
 }
 
+// CollectFailedBuildLogs records failed TaskRuns and writes available failed-step logs.
 func (c FailedBuildCollector) CollectFailedBuildLogs(ctx context.Context, namespace, pipelineRunName, outputDir string) ([]FailedBuildLog, error) {
 	if c.Dynamic == nil {
 		return nil, fmt.Errorf("dynamic client is required")
@@ -132,6 +135,7 @@ func (c FailedBuildCollector) CollectFailedBuildLogs(ctx context.Context, namesp
 	return logs, nil
 }
 
+// writeContainerLog fetches a bounded container log and returns its path under failed-builds.
 func (c FailedBuildCollector) writeContainerLog(ctx context.Context, namespace, podName, container, taskRunName, outputDir string) (string, error) {
 	tailLines := c.TailLines
 	if tailLines <= 0 {
@@ -163,6 +167,7 @@ func (c FailedBuildCollector) writeContainerLog(ctx context.Context, namespace, 
 	return filepath.Join("failed-builds", fileName), nil
 }
 
+// taskRunConditionStatus returns the TaskRun Succeeded condition or Unknown when absent.
 func taskRunConditionStatus(taskRun *unstructured.Unstructured) string {
 	conditions, _, _ := unstructured.NestedSlice(taskRun.Object, "status", "conditions")
 	for _, raw := range conditions {
@@ -176,6 +181,7 @@ func taskRunConditionStatus(taskRun *unstructured.Unstructured) string {
 	return "Unknown"
 }
 
+// taskRunConditionMessage returns the TaskRun Succeeded condition message when present.
 func taskRunConditionMessage(taskRun *unstructured.Unstructured) string {
 	conditions, _, _ := unstructured.NestedSlice(taskRun.Object, "status", "conditions")
 	for _, raw := range conditions {

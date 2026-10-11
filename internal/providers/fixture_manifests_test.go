@@ -43,6 +43,7 @@ var _ = Describe("multi-architecture fixture PipelineRuns", func() {
 	})
 })
 
+// assertMultiArchitecturePipelineRun verifies a fixture PipelineRun builds and indexes both platforms.
 func assertMultiArchitecturePipelineRun(manifestPath string) {
 	contents, err := os.ReadFile(manifestPath)
 	Expect(err).ShouldNot(HaveOccurred(), "reading PipelineRun manifest %q", manifestPath)
@@ -80,18 +81,21 @@ func assertMultiArchitecturePipelineRun(manifestPath string) {
 	Expect(manifestList(imageIndex["runAfter"], manifestPath, "build-image-index.runAfter")).Should(ContainElement("build-images"), "manifest %q: image index must run after build-images", manifestPath)
 }
 
+// manifestObject asserts and returns a mapping from a fixture manifest value.
 func manifestObject(value any, manifestPath, description string) map[string]any {
 	object, ok := value.(map[string]any)
 	Expect(ok).Should(BeTrue(), "manifest %q: %s should be a mapping", manifestPath, description)
 	return object
 }
 
+// manifestList asserts and returns a sequence from a fixture manifest value.
 func manifestList(value any, manifestPath, description string) []any {
 	list, ok := value.([]any)
 	Expect(ok).Should(BeTrue(), "manifest %q: %s should be a sequence", manifestPath, description)
 	return list
 }
 
+// namedManifestObject returns the manifest mapping whose name field matches name.
 func namedManifestObject(objects []any, manifestPath, name string) map[string]any {
 	for _, value := range objects {
 		object := manifestObject(value, manifestPath, "named object")
@@ -103,11 +107,13 @@ func namedManifestObject(objects []any, manifestPath, name string) map[string]an
 	return nil
 }
 
+// expectManifestParam asserts that a named manifest parameter has the expected value.
 func expectManifestParam(params []any, manifestPath, name string, expectedValue any) {
 	param := namedManifestObject(params, manifestPath, name)
 	Expect(param["value"]).Should(Equal(expectedValue), "manifest %q: parameter %q should have the expected value", manifestPath, name)
 }
 
+// expectTaskRefParam asserts that a task reference parameter has the expected value.
 func expectTaskRefParam(task map[string]any, manifestPath, paramName, expectedValue string) {
 	taskRef := manifestObject(task["taskRef"], manifestPath, "build-images.taskRef")
 	params := manifestList(taskRef["params"], manifestPath, "build-images.taskRef.params")

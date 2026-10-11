@@ -23,6 +23,7 @@ type BuildOutputInspector struct {
 	Now     func() time.Time
 }
 
+// Verify collects build evidence and requires outputs for both supported Linux architectures.
 func (i BuildOutputInspector) Verify(ctx context.Context, identities []model.PipelineRunIdentity) ([]model.BuildOutputEvidence, error) {
 	if i.Dynamic == nil {
 		return nil, fmt.Errorf("dynamic client is required")
@@ -45,6 +46,7 @@ func (i BuildOutputInspector) Verify(ctx context.Context, identities []model.Pip
 	return evidence, nil
 }
 
+// verifyPipelineRun validates one PipelineRun and extracts its successful Buildah outputs.
 func (i BuildOutputInspector) verifyPipelineRun(ctx context.Context, identity model.PipelineRunIdentity, verifiedAt time.Time) (model.BuildOutputEvidence, error) {
 	if strings.TrimSpace(identity.Namespace) == "" || strings.TrimSpace(identity.Name) == "" {
 		return model.BuildOutputEvidence{}, fmt.Errorf("PipelineRun identity is incomplete")
@@ -105,6 +107,7 @@ func (i BuildOutputInspector) verifyPipelineRun(ctx context.Context, identity mo
 	return model.BuildOutputEvidence{Component: identity.Component, PipelineRun: verifiedIdentity, Platforms: platforms, CreatedOutputs: createdOutputs, OutputDigests: outputDigests, VerifiedAt: verifiedAt}, nil
 }
 
+// ownedByPipelineRun reports whether a TaskRun has a matching PipelineRun owner reference.
 func ownedByPipelineRun(taskRun *unstructured.Unstructured, uid, name string) bool {
 	owners, found, err := unstructured.NestedSlice(taskRun.Object, "metadata", "ownerReferences")
 	if err != nil || !found {
@@ -124,11 +127,12 @@ func ownedByPipelineRun(taskRun *unstructured.Unstructured, uid, name string) bo
 	return false
 }
 
-// OwnedByPipelineRun reports whether TaskRun belongs to the named PipelineRun.
+// OwnedByPipelineRun reports whether a TaskRun belongs to the named PipelineRun.
 func OwnedByPipelineRun(taskRun *unstructured.Unstructured, uid, name string) bool {
 	return ownedByPipelineRun(taskRun, uid, name)
 }
 
+// conditionStatus returns the Succeeded condition status or Unknown when absent.
 func conditionStatus(object *unstructured.Unstructured) string {
 	conditions, _, _ := unstructured.NestedSlice(object.Object, "status", "conditions")
 	for _, raw := range conditions {
@@ -142,6 +146,7 @@ func conditionStatus(object *unstructured.Unstructured) string {
 	return "Unknown"
 }
 
+// IsBuildTaskRun reports whether a TaskRun represents a Buildah pipeline task.
 func IsBuildTaskRun(taskRun *unstructured.Unstructured) bool {
 	labels := taskRun.GetLabels()
 	pipelineTask := labels["tekton.dev/pipelineTask"]
@@ -163,6 +168,7 @@ func IsBuildTaskRun(taskRun *unstructured.Unstructured) bool {
 	return false
 }
 
+// taskRunOutput extracts the normalized platform, image URL, and digest from a TaskRun.
 func taskRunOutput(taskRun *unstructured.Unstructured) (string, string, string) {
 	platform := taskRunPlatform(taskRun)
 	imageURL := ""
@@ -196,6 +202,7 @@ func taskRunOutput(taskRun *unstructured.Unstructured) (string, string, string) 
 	return platform, imageURL, digest
 }
 
+// taskRunPlatform returns the first recognized platform declared by TaskRun metadata or params.
 func taskRunPlatform(taskRun *unstructured.Unstructured) string {
 	for _, values := range []map[string]string{taskRun.GetLabels(), taskRun.GetAnnotations()} {
 		for _, key := range []string{
@@ -226,10 +233,12 @@ func taskRunPlatform(taskRun *unstructured.Unstructured) string {
 	return ""
 }
 
+// isBuildPlatform reports whether value names a supported build platform.
 func isBuildPlatform(value string) bool {
 	return normalizeBuildPlatform(value) != ""
 }
 
+// normalizeBuildPlatform maps supported platform aliases to canonical Linux platform names.
 func normalizeBuildPlatform(value string) string {
 	switch strings.TrimSpace(value) {
 	case "linux/amd64", "linux/x86_64", "linux-x86_64":

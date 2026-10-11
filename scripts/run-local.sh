@@ -2,10 +2,12 @@
 
 set -euo pipefail
 
+# usage prints the setup helper's accepted arguments to standard error.
 usage() {
     printf 'Usage: %s --setup [env-file] [github|gitlab|both]\n' "$(basename "$0")" >&2
 }
 
+# trim removes leading and trailing shell whitespace from its argument.
 trim() {
     local value=$1
     value="${value#"${value%%[![:space:]]*}"}"
@@ -13,6 +15,7 @@ trim() {
     printf '%s' "$value"
 }
 
+# env_value prints the requested key from ENV_FILE and returns failure when absent.
 env_value() {
     local requested_key=$1
     local line key value result found=1
@@ -45,6 +48,7 @@ env_value() {
     return "$found"
 }
 
+# resolve_path leaves absolute paths unchanged and anchors relative paths to base_dir.
 resolve_path() {
     local path=$1
     local base_dir=$2

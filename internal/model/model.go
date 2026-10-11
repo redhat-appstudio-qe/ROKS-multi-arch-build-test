@@ -24,10 +24,12 @@ var phaseOrder = []Phase{
 	PhaseBuildOutputsVerified, PhaseCompleted,
 }
 
+// IsTerminalPhase reports whether phase marks a completed or failed run.
 func IsTerminalPhase(phase Phase) bool {
 	return phase == PhaseCompleted || phase == PhaseFailed
 }
 
+// ValidateTransition reports whether a run may move from from to to.
 func ValidateTransition(from, to Phase) error {
 	if to == PhaseFailed {
 		if from == PhaseCompleted {

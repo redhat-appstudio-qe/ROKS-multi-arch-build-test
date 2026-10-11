@@ -57,6 +57,7 @@ type Request struct {
 	Credentials      Credentials
 }
 
+// Defaults returns a request populated with the tool's default run settings.
 func Defaults() Request {
 	return Request{
 		StateDir:         DefaultStateDir,
@@ -73,6 +74,7 @@ func Defaults() Request {
 	}
 }
 
+// Parse builds and validates a request from command-line arguments and environment values.
 func Parse(args []string) (Request, error) {
 	if len(args) == 0 {
 		return Request{}, errors.New("usage: konflux-test run <github|gitlab|both> ... | cleanup --run-id <id> ...")
@@ -142,6 +144,7 @@ func Parse(args []string) (Request, error) {
 	return req, req.Validate()
 }
 
+// credentialsFromEnv resolves provider credentials from the environment and env-file values.
 func credentialsFromEnv(fileValues map[string]string) Credentials {
 	return Credentials{
 		GitHubToken:  envValue("GITHUB_TOKEN", fileValues),
@@ -150,6 +153,7 @@ func credentialsFromEnv(fileValues map[string]string) Credentials {
 	}
 }
 
+// envValue returns a nonempty process value for key, falling back to fileValues.
 func envValue(key string, fileValues map[string]string) string {
 	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 		return value
@@ -157,6 +161,7 @@ func envValue(key string, fileValues map[string]string) string {
 	return fileValues[key]
 }
 
+// readEnvFile parses KEY=VALUE entries from path, ignoring blank lines and comments.
 func readEnvFile(path string) (map[string]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -183,6 +188,7 @@ func readEnvFile(path string) (map[string]string, error) {
 	return values, nil
 }
 
+// Validate checks that the request has supported commands, settings, and credentials.
 func (r Request) Validate() error {
 	if r.Command == "" {
 		return errors.New("command is required")
@@ -250,6 +256,7 @@ func (r Request) Validate() error {
 	return nil
 }
 
+// validateProviderCredentials reports missing credentials required by provider.
 func validateProviderCredentials(provider string, credentials Credentials) error {
 	missing := []string{}
 	switch provider {
@@ -275,6 +282,7 @@ func validateProviderCredentials(provider string, credentials Credentials) error
 	return nil
 }
 
+// validRunID reports whether value uses only allowed run ID characters and length.
 func validRunID(value string) bool {
 	if value == "" || len(value) > 100 {
 		return false

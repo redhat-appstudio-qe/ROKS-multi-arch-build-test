@@ -23,6 +23,7 @@ type fakePrompt struct {
 	calls    int
 }
 
+// Confirm counts prompt calls and returns the configured approval.
 func (p *fakePrompt) Confirm(context.Context, string) (bool, error) {
 	p.calls++
 	return p.approved, nil
@@ -105,6 +106,7 @@ var _ = Describe("Lifecycle", func() {
 	})
 })
 
+// lifecycleTestSources returns artifact sources that write valid synthetic snapshots.
 func lifecycleTestSources() []collector.Source {
 	sources := collector.RequiredArtifactNames()
 	result := make([]collector.Source, 0, len(sources)-2)
@@ -124,10 +126,12 @@ func lifecycleTestSources() []collector.Source {
 	return result
 }
 
+// namespaceObject creates a namespace carrying the requested run ownership labels.
 func namespaceObject(name, runID string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]any{"name": name, "labels": map[string]any{cleanup.ManagedByLabel: cleanup.ManagedByValue, cleanup.RunIDLabel: runID}}}}
 }
 
+// writeLifecycleArtifact creates a directory or writes an empty JSON object at path.
 func writeLifecycleArtifact(path string) error {
 	if filepath.Ext(path) == "" {
 		return os.MkdirAll(path, 0o750)

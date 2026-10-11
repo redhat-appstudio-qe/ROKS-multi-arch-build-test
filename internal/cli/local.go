@@ -23,6 +23,7 @@ type LiveRunner struct {
 	Prompt workflow.Confirmation
 }
 
+// NewLiveRunner returns a runner wired to live services and interactive confirmation.
 func NewLiveRunner() Runner {
 	return LiveRunner{Prompt: &serializedConfirmation{prompt: NewInteractiveConfirmationPrompt()}}
 }
@@ -32,12 +33,14 @@ type serializedConfirmation struct {
 	prompt workflow.Confirmation
 }
 
+// Confirm serializes calls to the wrapped confirmation prompt.
 func (p *serializedConfirmation) Confirm(ctx context.Context, message string) (bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.prompt.Confirm(ctx, message)
 }
 
+// Run executes a provider workflow, collects its artifacts, and finalizes its namespace.
 func (runner LiveRunner) Run(ctx context.Context, request config.Request) error {
 	clients, err := cluster.NewClientSet("")
 	if err != nil {
@@ -83,6 +86,7 @@ func (runner LiveRunner) Run(ctx context.Context, request config.Request) error 
 	return nil
 }
 
+// Cleanup validates the cluster, run evidence, and namespace ownership, then requests approval before deletion.
 func (runner LiveRunner) Cleanup(ctx context.Context, request config.Request) error {
 	if request.Command != config.CommandCleanup {
 		return fmt.Errorf("unsupported cleanup command %q", request.Command)
@@ -98,6 +102,7 @@ func (runner LiveRunner) Cleanup(ctx context.Context, request config.Request) er
 	return cleanupRun(ctx, request, store, cleanup.NamespaceService{Dynamic: clients.Dynamic}, runner.Prompt)
 }
 
+// cleanupRun verifies saved evidence and namespace ownership before prompting for deletion.
 func cleanupRun(ctx context.Context, request config.Request, store evidence.ManifestStore, namespaceService cleanup.NamespaceService, prompt workflow.Confirmation) error {
 	if strings.TrimSpace(request.RunID) == "" {
 		return fmt.Errorf("cleanup requires an exact run ID")
@@ -147,6 +152,7 @@ func cleanupRun(ctx context.Context, request config.Request, store evidence.Mani
 	return nil
 }
 
+// normalizeServer trims surrounding whitespace and trailing slashes from a server URL.
 func normalizeServer(server string) string {
 	return strings.TrimRight(strings.TrimSpace(server), "/")
 }
@@ -159,6 +165,7 @@ type Lifecycle struct {
 	Sources   []collector.Source
 }
 
+// Finalize collects and verifies run artifacts, then prompts before optionally deleting the owned namespace.
 func (l Lifecycle) Finalize(ctx context.Context, manifest model.RunManifest, runErr error) error {
 	namespace := manifest.Fixture.TenantNamespace
 	if namespace == "" {
@@ -220,6 +227,7 @@ func (l Lifecycle) Finalize(ctx context.Context, manifest model.RunManifest, run
 	return l.Namespace.WaitDeleted(ctx, namespace)
 }
 
+// providerFor constructs the provider client selected by request credentials.
 func providerFor(request config.Request) (providers.Provider, error) {
 	switch request.Provider {
 	case config.ProviderGitHub:
