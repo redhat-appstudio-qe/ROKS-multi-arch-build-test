@@ -119,10 +119,12 @@ type staticNameLister struct {
 	names []string
 }
 
+// List returns a copy of the configured namespace names.
 func (l staticNameLister) List(context.Context) ([]string, error) {
 	return append([]string(nil), l.names...), nil
 }
 
+// namespace builds a test Namespace with the requested run ID and optional ownership label.
 func namespace(name, runID string, owned bool) *unstructured.Unstructured {
 	labels := map[string]any{RunIDLabel: runID}
 	if owned {
@@ -131,6 +133,7 @@ func namespace(name, runID string, owned bool) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]any{"name": name, "labels": labels}}}
 }
 
+// cleanupClient creates a dynamic fake with list kinds for cleanup resource types.
 func cleanupClient(objects ...runtime.Object) *fake.FakeDynamicClient {
 	return fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
 		NamespaceGVR: "NamespaceList",

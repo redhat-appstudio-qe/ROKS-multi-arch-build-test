@@ -11,6 +11,7 @@ import (
 	"k8s.io/client-go/dynamic"
 )
 
+// StripFinalizers removes finalizers from resources of gvr in namespace and returns the number changed.
 func StripFinalizers(ctx context.Context, client dynamic.Interface, namespace string, gvr schema.GroupVersionResource) (int, error) {
 	if client == nil {
 		return 0, fmt.Errorf("dynamic client is required")
@@ -46,6 +47,7 @@ var finalizerGVRs = []schema.GroupVersionResource{
 	{Group: "tekton.dev", Version: "v1", Resource: "pipelineruns"},
 }
 
+// StripAllFinalizers removes finalizers from the configured cleanup resource types in namespace.
 func StripAllFinalizers(ctx context.Context, client dynamic.Interface, namespace string) (int, error) {
 	total := 0
 	var firstErr error

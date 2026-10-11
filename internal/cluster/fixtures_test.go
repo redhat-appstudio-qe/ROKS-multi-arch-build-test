@@ -14,6 +14,7 @@ import (
 	"k8s.io/client-go/dynamic/fake"
 )
 
+// testFixtureSpec builds a fixture specification with three components for a provider.
 func testFixtureSpec(provider, token string) FixtureSpec {
 	return FixtureSpec{
 		Namespace:   "tenant",
@@ -29,6 +30,7 @@ func testFixtureSpec(provider, token string) FixtureSpec {
 	}
 }
 
+// fixtureTestClient creates a fake dynamic client configured for Secret lists.
 func fixtureTestClient(objects ...runtime.Object) *fake.FakeDynamicClient {
 	return fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
 		SecretGVR: "SecretList",

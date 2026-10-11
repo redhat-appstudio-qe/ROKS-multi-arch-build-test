@@ -77,6 +77,7 @@ var _ = Describe("StripAllFinalizers", func() {
 	})
 })
 
+// resource builds an unstructured test object with the given metadata finalizers.
 func resource(kind, name string, finalizers []any) *unstructured.Unstructured {
 	object := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "appstudio.redhat.com/v1alpha1",

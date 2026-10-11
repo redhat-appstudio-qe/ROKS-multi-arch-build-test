@@ -7,6 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+// TestCluster runs the cluster package's Ginkgo test suite.
 func TestCluster(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "Cluster Suite")

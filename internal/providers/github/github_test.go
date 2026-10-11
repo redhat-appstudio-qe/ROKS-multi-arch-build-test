@@ -21,6 +21,7 @@ type fakeClient struct {
 	updateCalls         int
 }
 
+// GetRepository returns the configured fake repository or the next queued error.
 func (f *fakeClient) GetRepository(string, string) (*gh.Repository, error) {
 	f.getCalls++
 	if len(f.getRepositoryErrors) > 0 {
@@ -34,10 +35,12 @@ func (f *fakeClient) GetRepository(string, string) (*gh.Repository, error) {
 	return f.repository, nil
 }
 
+// GetFile returns fixed encoded file content for provider tests.
 func (f *fakeClient) GetFile(string, string, string, string) (*gh.RepositoryContent, error) {
 	return &gh.RepositoryContent{SHA: gh.String("sha-1"), Content: gh.String("ZmlsZQ==")}, nil
 }
 
+// UpdateFile returns the next queued error or a fixed commit response.
 func (f *fakeClient) UpdateFile(string, string, string, string, string, string) (*gh.RepositoryContentResponse, error) {
 	f.updateCalls++
 	if len(f.updateErrors) > 0 {

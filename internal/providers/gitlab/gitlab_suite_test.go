@@ -7,6 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+// TestGitLab runs the GitLab provider's Ginkgo test suite.
 func TestGitLab(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "GitLab Suite")

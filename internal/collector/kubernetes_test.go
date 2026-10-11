@@ -108,6 +108,7 @@ var _ = ginkgo.Describe("Kubernetes sources", func() {
 	})
 })
 
+// collectorTaskRunGVR returns the TaskRun resource identifier used by fake clients.
 func collectorTaskRunGVR() schema.GroupVersionResource {
 	return schema.GroupVersionResource{Group: "tekton.dev", Version: "v1", Resource: "taskruns"}
 }

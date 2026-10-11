@@ -16,6 +16,7 @@ type fakeStage struct {
 	fail      string
 }
 
+// call records a fake stage invocation and optionally returns a canceled-context error.
 func (s *fakeStage) call(ctx context.Context, name string) error {
 	s.calls = append(s.calls, name)
 	if _, ok := ctx.Deadline(); ok {
@@ -29,18 +30,28 @@ func (s *fakeStage) call(ctx context.Context, name string) error {
 	}
 	return nil
 }
+
+// Preflight records invocation of the fake preflight stage.
 func (s *fakeStage) Preflight(ctx context.Context, _ *model.RunManifest) error {
 	return s.call(ctx, "preflight")
 }
+
+// EnsureFixture records invocation of the fake fixture stage.
 func (s *fakeStage) EnsureFixture(ctx context.Context, _ *model.RunManifest) error {
 	return s.call(ctx, "fixture")
 }
+
+// TriggerComponents records invocation of the fake trigger stage.
 func (s *fakeStage) TriggerComponents(ctx context.Context, _ *model.RunManifest) error {
 	return s.call(ctx, "trigger")
 }
+
+// VerifyBuilds records invocation of the fake build stage.
 func (s *fakeStage) VerifyBuilds(ctx context.Context, _ *model.RunManifest) error {
 	return s.call(ctx, "builds")
 }
+
+// VerifyBuildOutputs records invocation of the fake output-verification stage.
 func (s *fakeStage) VerifyBuildOutputs(ctx context.Context, _ *model.RunManifest) error {
 	return s.call(ctx, "build-outputs")
 }

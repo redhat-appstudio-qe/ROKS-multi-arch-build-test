@@ -12,6 +12,7 @@ import (
 	"github.com/redhat-appstudio/konflux-test/internal/setup"
 )
 
+// main runs konflux-test and exits with a nonzero status when execution fails.
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -19,6 +20,7 @@ func main() {
 	}
 }
 
+// run prepares, parses, and executes the supplied command-line arguments.
 func run(args []string) error {
 	preparedArgs, err := setup.Prepare(args)
 	if err != nil {

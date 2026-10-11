@@ -22,6 +22,7 @@ type fakeClient struct {
 	updateCalls      int
 }
 
+// GetProject returns the configured fake project or the next queued error.
 func (f *fakeClient) GetProject(string) (*gl.Project, error) {
 	f.getCalls++
 	if len(f.getProjectErrors) > 0 {
@@ -35,14 +36,17 @@ func (f *fakeClient) GetProject(string) (*gl.Project, error) {
 	return f.project, nil
 }
 
+// GetFileMetaData returns fixed file metadata for provider tests.
 func (f *fakeClient) GetFileMetaData(string, string, string) (*gl.File, error) {
 	return &gl.File{CommitID: "sha-1"}, nil
 }
 
+// GetFile returns base64-encoded file content for provider tests.
 func (f *fakeClient) GetFile(string, string, string) (string, error) {
 	return base64.StdEncoding.EncodeToString([]byte("FROM base\n")), nil
 }
 
+// UpdateFile returns the next queued error or nil for provider tests.
 func (f *fakeClient) UpdateFile(string, string, string, string, string, string) error {
 	f.updateCalls++
 	if len(f.updateErrors) > 0 {

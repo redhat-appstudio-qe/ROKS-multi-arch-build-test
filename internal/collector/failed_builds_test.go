@@ -128,6 +128,7 @@ var _ = Describe("CollectFailedBuildLogs", func() {
 	})
 })
 
+// taskRunWithSteps creates a TaskRun fixture with the supplied step status objects.
 func taskRunWithSteps(steps ...map[string]any) *unstructured.Unstructured {
 	objects := make([]any, len(steps))
 	for index, step := range steps {
@@ -143,6 +144,7 @@ func taskRunWithSteps(steps ...map[string]any) *unstructured.Unstructured {
 	}}
 }
 
+// failedTaskRun creates a TaskRun fixture with one failed Buildah step.
 func failedTaskRun() *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "tekton.dev/v1",

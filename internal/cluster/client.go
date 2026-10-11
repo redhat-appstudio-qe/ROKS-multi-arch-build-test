@@ -47,8 +47,11 @@ type PipelineRunSelector struct {
 }
 
 type Cluster interface {
+	// Server returns the API server URL for the connected cluster.
 	Server(context.Context) (string, error)
+	// CheckAccess checks whether requested API group versions are served.
 	CheckAccess(context.Context, []AccessCheck) []CheckResult
+	// CheckScheduling validates controller readiness and platform configuration.
 	CheckScheduling(context.Context, SchedulingSpec) []CheckResult
 }
 
@@ -59,6 +62,7 @@ type ClientSet struct {
 	Discovery  discovery.DiscoveryInterface
 }
 
+// NewClientSet loads kubeconfig and creates clients for the selected cluster.
 func NewClientSet(kubeconfig string) (*ClientSet, error) {
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if kubeconfig != "" {
@@ -72,6 +76,7 @@ func NewClientSet(kubeconfig string) (*ClientSet, error) {
 	return NewClientSetFromConfig(config)
 }
 
+// NewClientSetFromConfig creates Kubernetes, dynamic, and discovery clients from a REST config.
 func NewClientSetFromConfig(config *rest.Config) (*ClientSet, error) {
 	if config == nil {
 		return nil, fmt.Errorf("rest config is nil")
@@ -99,6 +104,7 @@ type RealCluster struct {
 	Clients *ClientSet
 }
 
+// Server returns the configured cluster host without trailing slashes.
 func (c *RealCluster) Server(context.Context) (string, error) {
 	if c == nil || c.Clients == nil || c.Clients.Config == nil {
 		return "", fmt.Errorf("cluster clients are not initialized")
@@ -106,6 +112,7 @@ func (c *RealCluster) Server(context.Context) (string, error) {
 	return strings.TrimRight(c.Clients.Config.Host, "/"), nil
 }
 
+// CheckAccess checks whether each requested API group version is served by the cluster.
 func (c *RealCluster) CheckAccess(ctx context.Context, checks []AccessCheck) []CheckResult {
 	results := make([]CheckResult, 0, len(checks))
 	for _, check := range checks {
@@ -125,6 +132,7 @@ func (c *RealCluster) CheckAccess(ctx context.Context, checks []AccessCheck) []C
 	return results
 }
 
+// CheckScheduling verifies controller readiness and host-config coverage for each platform.
 func (c *RealCluster) CheckScheduling(ctx context.Context, spec SchedulingSpec) []CheckResult {
 	if c == nil || c.Clients == nil || c.Clients.Kubernetes == nil {
 		return []CheckResult{{Name: "multi-platform-controller", Details: "kubernetes client is not initialized"}}
@@ -170,6 +178,7 @@ func (c *RealCluster) CheckScheduling(ctx context.Context, spec SchedulingSpec) 
 	return results
 }
 
+// controllerDeploymentReady reports whether the deployment has observed and available desired replicas.
 func controllerDeploymentReady(deployment *appsv1.Deployment) bool {
 	if deployment == nil {
 		return false
@@ -181,6 +190,7 @@ func controllerDeploymentReady(deployment *appsv1.Deployment) bool {
 	return desired > 0 && deployment.Status.ObservedGeneration >= deployment.Generation && deployment.Status.ReadyReplicas >= desired && deployment.Status.AvailableReplicas >= desired && deployment.Status.UpdatedReplicas >= desired
 }
 
+// configuredPlatformMode returns the host-config scheduling mode for a platform.
 func configuredPlatformMode(data map[string]string, platform string) string {
 	for _, entry := range []struct {
 		key  string

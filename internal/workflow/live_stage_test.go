@@ -32,6 +32,7 @@ type confirmationStub struct {
 	calls    int
 }
 
+// Confirm records a prompt and returns the stub's configured approval.
 func (s *confirmationStub) Confirm(context.Context, string) (bool, error) {
 	s.calls++
 	return s.approved, nil
@@ -41,6 +42,7 @@ type testNameLister struct {
 	names []string
 }
 
+// List returns a copy of the fake namespace names.
 func (l testNameLister) List(context.Context) ([]string, error) {
 	return append([]string(nil), l.names...), nil
 }
@@ -309,6 +311,7 @@ var _ = Describe("LiveStage", func() {
 	})
 })
 
+// failedTaskRunForWorkflow creates a failed Buildah TaskRun with a pod and step container.
 func failedTaskRunForWorkflow() *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "tekton.dev/v1", "kind": "TaskRun",
@@ -328,6 +331,7 @@ func failedTaskRunForWorkflow() *unstructured.Unstructured {
 	}}
 }
 
+// pipelineRun creates a PipelineRun fixture with component, SHA, identity, and status metadata.
 func pipelineRun(name, component, sha, uid, status string) unstructured.Unstructured {
 	return unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "tekton.dev/v1",
@@ -351,6 +355,7 @@ func pipelineRun(name, component, sha, uid, status string) unstructured.Unstruct
 	}}
 }
 
+// buildTaskRunForWorkflow creates a PipelineRun-owned TaskRun fixture for a build or validation task.
 func buildTaskRunForWorkflow(name, ownerUID, status, task string) unstructured.Unstructured {
 	pipelineTask := "build-container"
 	if task == "sast-shell-check" {
@@ -377,6 +382,7 @@ func buildTaskRunForWorkflow(name, ownerUID, status, task string) unstructured.U
 	}}
 }
 
+// componentWithPaCStatus creates a component fixture with the requested PaC state.
 func componentWithPaCStatus(name, state string) unstructured.Unstructured {
 	return unstructured.Unstructured{Object: map[string]any{
 		"metadata": map[string]any{
@@ -388,6 +394,7 @@ func componentWithPaCStatus(name, state string) unstructured.Unstructured {
 	}}
 }
 
+// namespaceObject creates an owned tenant namespace fixture for a run.
 func namespaceObject(name, runID string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1",
@@ -402,6 +409,7 @@ func namespaceObject(name, runID string) *unstructured.Unstructured {
 	}}
 }
 
+// namespaceDynamicClient creates a fake dynamic client with list kinds for workflow resources.
 func namespaceDynamicClient(objects ...runtime.Object) *dynamicfake.FakeDynamicClient {
 	return dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
 		cleanup.NamespaceGVR: "NamespaceList",

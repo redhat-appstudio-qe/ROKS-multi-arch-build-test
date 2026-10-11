@@ -32,6 +32,7 @@ type NamespaceInfo struct {
 }
 
 type NamespaceNameLister interface {
+	// List returns the names of namespaces visible to the lister.
 	List(context.Context) ([]string, error)
 }
 
@@ -45,6 +46,7 @@ type OCNamespaceNameLister struct {
 	Command string
 }
 
+// List runs the configured namespace CLI to retrieve and parse namespace names.
 func (l OCNamespaceNameLister) List(ctx context.Context) ([]string, error) {
 	command := strings.TrimSpace(l.Command)
 	if command == "" {
@@ -64,6 +66,7 @@ func (l OCNamespaceNameLister) List(ctx context.Context) ([]string, error) {
 	return parseNamespaceNames(output)
 }
 
+// parseNamespaceNames validates, deduplicates, and sorts namespace names from CLI output.
 func parseNamespaceNames(output []byte) ([]string, error) {
 	names := make([]string, 0)
 	seen := make(map[string]struct{})
@@ -87,6 +90,7 @@ func parseNamespaceNames(output []byte) ([]string, error) {
 	return names, nil
 }
 
+// Inspect fetches one namespace and returns its name, labels, and run ID.
 func (s NamespaceService) Inspect(ctx context.Context, name string) (NamespaceInfo, error) {
 	if s.Dynamic == nil {
 		return NamespaceInfo{}, fmt.Errorf("dynamic client is required")
@@ -101,6 +105,7 @@ func (s NamespaceService) Inspect(ctx context.Context, name string) (NamespaceIn
 	return namespaceInfo(object), nil
 }
 
+// FindCandidates lists namespaces matching target and requires the konflux-test manager label and a run ID.
 func (s NamespaceService) FindCandidates(ctx context.Context, target string) ([]NamespaceInfo, error) {
 	if s.Dynamic == nil {
 		return nil, fmt.Errorf("dynamic client is required")
@@ -156,6 +161,7 @@ func (s NamespaceService) FindCandidates(ctx context.Context, target string) ([]
 	return candidates, nil
 }
 
+// Delete removes name only after confirming exact manager and run ID ownership labels.
 func (s NamespaceService) Delete(ctx context.Context, name, runID string) error {
 	if runID == "" {
 		return fmt.Errorf("run ID is required for namespace deletion")
@@ -177,6 +183,7 @@ func (s NamespaceService) Delete(ctx context.Context, name, runID string) error 
 	return nil
 }
 
+// WaitDeleted polls until name no longer exists or ctx is canceled.
 func (s NamespaceService) WaitDeleted(ctx context.Context, name string) error {
 	if s.Dynamic == nil {
 		return fmt.Errorf("dynamic client is required")
@@ -203,6 +210,7 @@ func (s NamespaceService) WaitDeleted(ctx context.Context, name string) error {
 	}
 }
 
+// namespaceInfo copies namespace labels into the service's value representation.
 func namespaceInfo(object *unstructured.Unstructured) NamespaceInfo {
 	labels := object.GetLabels()
 	copyLabels := make(map[string]string, len(labels))

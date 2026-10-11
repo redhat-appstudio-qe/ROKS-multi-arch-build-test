@@ -27,6 +27,7 @@ type resourceSource struct {
 	path      string
 }
 
+// KubernetesSources returns collectors for the run's namespaced workload snapshots.
 func KubernetesSources(client dynamic.Interface, namespace, _ string) []Source {
 	resources := []resourceSource{
 		{name: "applications", gvr: schema.GroupVersionResource{Group: "appstudio.redhat.com", Version: "v1alpha1", Resource: "applications"}, namespace: namespace, path: "workload/applications.json"},
@@ -56,6 +57,7 @@ func KubernetesSources(client dynamic.Interface, namespace, _ string) []Source {
 	return sources
 }
 
+// writeTaskRunYAMLs writes a redacted YAML snapshot for each TaskRun in directory.
 func writeTaskRunYAMLs(directory, namespace string, taskRuns []unstructured.Unstructured) error {
 	if err := os.MkdirAll(directory, 0o750); err != nil {
 		return err
@@ -85,6 +87,7 @@ var DefaultLogNamespaces = []string{
 	"konflux-image-controller",
 }
 
+// KubernetesPodLogSources returns optional log collectors for the tenant and system namespaces.
 func KubernetesPodLogSources(client kubernetes.Interface, tenantNamespace string, startedAt time.Time) []Source {
 	namespaces := append([]string{tenantNamespace}, DefaultLogNamespaces...)
 	seen := make(map[string]struct{}, len(namespaces))
@@ -104,6 +107,7 @@ func KubernetesPodLogSources(client kubernetes.Interface, tenantNamespace string
 
 type podLogFetcher func(context.Context, string, string, string, corev1.PodLogOptions) ([]byte, error)
 
+// newPodLogSource builds a collector that writes each pod container's logs from startedAt onward.
 func newPodLogSource(client kubernetes.Interface, namespace string, startedAt time.Time, fetch podLogFetcher) Source {
 	path := filepath.Join("logs", namespace)
 	if fetch == nil {
@@ -149,6 +153,7 @@ func newPodLogSource(client kubernetes.Interface, namespace string, startedAt ti
 	}}
 }
 
+// safePathPart replaces path separators and traversal markers for use in artifact filenames.
 func safePathPart(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.NewReplacer("/", "_", "\\", "_", "..", "_").Replace(value)

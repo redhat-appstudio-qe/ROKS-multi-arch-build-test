@@ -10,19 +10,23 @@ import (
 )
 
 type Runner interface {
+	// Run executes one configured provider workflow.
 	Run(context.Context, config.Request) error
 }
 
 type CleanupRunner interface {
+	// Cleanup verifies run evidence and namespace ownership, then asks before deleting the tenant namespace.
 	Cleanup(context.Context, config.Request) error
 }
 
 type UnconfiguredRunner struct{}
 
+// Run reports that no workflow services are configured.
 func (UnconfiguredRunner) Run(context.Context, config.Request) error {
 	return errors.New("workflow services are not configured")
 }
 
+// Execute dispatches a run or cleanup request to the configured runner.
 func Execute(ctx context.Context, req config.Request, runner Runner) error {
 	if runner == nil {
 		runner = UnconfiguredRunner{}
@@ -44,6 +48,7 @@ func Execute(ctx context.Context, req config.Request, runner Runner) error {
 	}
 }
 
+// runBoth runs the fixed GitHub and GitLab requests concurrently and joins their errors.
 func runBoth(ctx context.Context, request config.Request, runner Runner) error {
 	requests := []config.Request{requestForProvider(request, config.ProviderGitHub), requestForProvider(request, config.ProviderGitLab)}
 	type runResult struct {
@@ -70,6 +75,7 @@ func runBoth(ctx context.Context, request config.Request, runner Runner) error {
 	return errors.Join(errorsByProvider...)
 }
 
+// requestForProvider creates a run request with the fixture and namespace for provider.
 func requestForProvider(request config.Request, provider string) config.Request {
 	request.Provider = provider
 	request.RunID = "run-" + uuid.NewString()

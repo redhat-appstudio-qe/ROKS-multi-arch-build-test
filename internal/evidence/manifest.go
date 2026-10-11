@@ -19,14 +19,17 @@ type ManifestStore struct {
 
 const latestDirectory = "latest"
 
+// NewManifestStore returns a manifest store rooted at root.
 func NewManifestStore(root string) ManifestStore {
 	return ManifestStore{Root: root}
 }
 
+// RunDir returns the legacy artifact directory path for runID.
 func (s ManifestStore) RunDir(runID string) string {
 	return filepath.Join(s.Root, runID)
 }
 
+// RunDirFor returns the artifact path recorded in manifest, falling back to its run ID.
 func (s ManifestStore) RunDirFor(manifest model.RunManifest) string {
 	directory := manifest.ArtifactDirectory
 	if strings.TrimSpace(directory) == "" {
@@ -35,6 +38,7 @@ func (s ManifestStore) RunDirFor(manifest model.RunManifest) string {
 	return filepath.Join(s.Root, directory)
 }
 
+// ArtifactDirectoryName builds a provider-and-time-based directory name for a run.
 func ArtifactDirectoryName(provider string, createdAt time.Time, runID string) string {
 	provider = strings.TrimSpace(provider)
 	if provider == "" {
@@ -43,6 +47,7 @@ func ArtifactDirectoryName(provider string, createdAt time.Time, runID string) s
 	return fmt.Sprintf("%s-run-%s_%s", provider, createdAt.Format("15:04")+"_"+createdAt.Format("2.1.2006"), runID)
 }
 
+// Create initializes and persists a run manifest, then updates latest if this run is newer.
 func (s ManifestStore) Create(manifest *model.RunManifest) error {
 	if manifest == nil || strings.TrimSpace(manifest.RunID) == "" {
 		return errors.New("run ID is required")
@@ -81,6 +86,7 @@ func (s ManifestStore) Create(manifest *model.RunManifest) error {
 	return nil
 }
 
+// Save updates a run manifest and its status file.
 func (s ManifestStore) Save(manifest *model.RunManifest) error {
 	if manifest == nil || manifest.RunID == "" {
 		return errors.New("run ID is required")
@@ -101,6 +107,7 @@ func (s ManifestStore) Save(manifest *model.RunManifest) error {
 	return s.writeStatus(*manifest)
 }
 
+// Transition validates and persists a run's next phase.
 func (s ManifestStore) Transition(manifest *model.RunManifest, phase model.Phase) error {
 	if manifest == nil {
 		return errors.New("manifest is nil")
@@ -112,6 +119,7 @@ func (s ManifestStore) Transition(manifest *model.RunManifest, phase model.Phase
 	return s.Save(manifest)
 }
 
+// Load reads the manifest for runID from its artifact directory.
 func (s ManifestStore) Load(runID string) (model.RunManifest, error) {
 	directory, err := s.findRunDir(runID)
 	if err != nil {
@@ -128,6 +136,7 @@ func (s ManifestStore) Load(runID string) (model.RunManifest, error) {
 	return manifest, nil
 }
 
+// Latest returns the run ID referenced by the latest artifact alias.
 func (s ManifestStore) Latest() (string, error) {
 	manifest, err := s.latestManifest()
 	if err != nil {
@@ -211,6 +220,7 @@ func (s ManifestStore) SetLatest(manifest model.RunManifest) error {
 	return nil
 }
 
+// validateArtifactDirectory rejects paths that are not a single directory name.
 func validateArtifactDirectory(directory string) error {
 	if strings.TrimSpace(directory) == "" || directory == "." || directory == ".." || filepath.IsAbs(directory) || filepath.Base(directory) != directory || strings.ContainsAny(directory, `/\\`) {
 		return errors.New("artifact directory must be a single directory name")
@@ -218,6 +228,7 @@ func validateArtifactDirectory(directory string) error {
 	return nil
 }
 
+// newerRun reports whether candidate sorts after current by creation time and run ID.
 func newerRun(candidate, current model.RunManifest) bool {
 	if candidate.CreatedAt.After(current.CreatedAt) {
 		return true
@@ -228,6 +239,7 @@ func newerRun(candidate, current model.RunManifest) bool {
 	return false
 }
 
+// latestManifest reads the manifest referenced by the latest alias.
 func (s ManifestStore) latestManifest() (*model.RunManifest, error) {
 	latestPath := filepath.Join(s.Root, latestDirectory)
 	info, err := os.Stat(latestPath)
@@ -263,6 +275,7 @@ func (s ManifestStore) latestManifest() (*model.RunManifest, error) {
 	return &manifest, nil
 }
 
+// findRunDir locates the artifact directory containing runID's manifest.
 func (s ManifestStore) findRunDir(runID string) (string, error) {
 	legacy := s.RunDir(runID)
 	if info, err := os.Stat(filepath.Join(legacy, "manifest.json")); err == nil && !info.IsDir() {
@@ -288,6 +301,7 @@ func (s ManifestStore) findRunDir(runID string) (string, error) {
 	return "", fmt.Errorf("run %s not found: %w", runID, os.ErrNotExist)
 }
 
+// writeStatus writes the compact status snapshot for manifest.
 func (s ManifestStore) writeStatus(manifest model.RunManifest) error {
 	status := struct {
 		RunID     string         `json:"runID"`
@@ -301,6 +315,7 @@ func (s ManifestStore) writeStatus(manifest model.RunManifest) error {
 	return nil
 }
 
+// writeJSON redacts value and atomically writes its indented JSON representation.
 func (s ManifestStore) writeJSON(path string, value any) error {
 	data, err := RedactedJSON(value)
 	if err != nil {
@@ -309,6 +324,7 @@ func (s ManifestStore) writeJSON(path string, value any) error {
 	return s.atomicWrite(path, append(data, '\n'), 0o640)
 }
 
+// atomicWrite replaces path with data through a synced temporary file.
 func (s ManifestStore) atomicWrite(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err

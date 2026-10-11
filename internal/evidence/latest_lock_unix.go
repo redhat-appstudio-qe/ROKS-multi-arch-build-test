@@ -10,6 +10,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// acquireLatestUpdateLock obtains an exclusive cross-process lock and returns its release function.
 func acquireLatestUpdateLock(root string) (func(), error) {
 	lockPath := filepath.Join(root, ".latest.lock")
 	fd, err := unix.Open(lockPath, unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)

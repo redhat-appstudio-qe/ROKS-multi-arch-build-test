@@ -14,11 +14,16 @@ type fakeCluster struct {
 	accessCalls int
 }
 
+// Server returns the fake cluster's configured API server URL.
 func (f *fakeCluster) Server(context.Context) (string, error) { return f.server, nil }
+
+// CheckAccess records the call and returns configured fake access results.
 func (f *fakeCluster) CheckAccess(context.Context, []AccessCheck) []CheckResult {
 	f.accessCalls++
 	return f.checks
 }
+
+// CheckScheduling returns the fake cluster's configured scheduling results.
 func (f *fakeCluster) CheckScheduling(context.Context, SchedulingSpec) []CheckResult {
 	return f.scheduling
 }

@@ -55,6 +55,7 @@ type FixtureService struct {
 	Dynamic dynamic.Interface
 }
 
+// EnsureFixture creates missing tenant resources and rejects drift in existing components.
 func (s FixtureService) EnsureFixture(ctx context.Context, spec FixtureSpec) (FixtureResult, error) {
 	if s.Dynamic == nil {
 		return FixtureResult{}, fmt.Errorf("dynamic client is required")
@@ -121,6 +122,7 @@ func (s FixtureService) EnsureFixture(ctx context.Context, spec FixtureSpec) (Fi
 	return result, nil
 }
 
+// ensureGitLabCredentialSecret reuses or creates a usable GitLab SCM basic-auth Secret.
 func (s FixtureService) ensureGitLabCredentialSecret(ctx context.Context, namespace, token string) error {
 	if strings.TrimSpace(token) == "" {
 		return fmt.Errorf("GitLab token is required to create a GitLab SCM Secret")
@@ -162,6 +164,7 @@ func (s FixtureService) ensureGitLabCredentialSecret(ctx context.Context, namesp
 	return nil
 }
 
+// usableBasicAuthSecret reports whether a Secret contains a non-empty basic-auth password.
 func usableBasicAuthSecret(secret *unstructured.Unstructured) bool {
 	secretType, found, err := unstructured.NestedString(secret.Object, "type")
 	if err != nil || !found || secretType != string(corev1.SecretTypeBasicAuth) {
@@ -177,6 +180,7 @@ func usableBasicAuthSecret(secret *unstructured.Unstructured) bool {
 	return false
 }
 
+// validateComponent checks that an existing component matches its expected source configuration.
 func validateComponent(object *unstructured.Unstructured, expected ComponentSpec, application string) error {
 	actualApplication, _, _ := unstructured.NestedString(object.Object, "spec", "application")
 	if actualApplication != application {

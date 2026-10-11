@@ -17,6 +17,7 @@ type PreflightResult struct {
 	Scheduling []CheckResult `json:"scheduling"`
 }
 
+// RunPreflight validates cluster identity, API access, and requested scheduling readiness.
 func RunPreflight(ctx context.Context, cluster Cluster, spec PreflightSpec) (PreflightResult, error) {
 	if cluster == nil {
 		return PreflightResult{}, fmt.Errorf("cluster is required")

@@ -9,6 +9,7 @@ const redactedValue = "[REDACTED]"
 
 var sensitiveFragments = []string{"token", "password", "secret", "authorization", "credential"}
 
+// IsSensitiveKey reports whether key contains a credential-related fragment.
 func IsSensitiveKey(key string) bool {
 	lower := strings.ToLower(key)
 	for _, fragment := range sensitiveFragments {
@@ -19,6 +20,7 @@ func IsSensitiveKey(key string) bool {
 	return false
 }
 
+// Redact recursively replaces values under sensitive map keys with a redaction marker.
 func Redact(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
@@ -42,6 +44,7 @@ func Redact(value any) any {
 	}
 }
 
+// RedactedJSON marshals value as indented JSON after redacting sensitive fields.
 func RedactedJSON(value any) ([]byte, error) {
 	data, err := json.Marshal(value)
 	if err != nil {

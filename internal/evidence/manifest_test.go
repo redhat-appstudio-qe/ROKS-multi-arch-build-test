@@ -131,6 +131,7 @@ var _ = Describe("ManifestStore", func() {
 	})
 })
 
+// expectLatestRun asserts that store's latest alias resolves to runID.
 func expectLatestRun(store ManifestStore, runID string) {
 	latest, err := store.Latest()
 	Expect(err).ShouldNot(HaveOccurred())

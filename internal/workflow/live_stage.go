@@ -34,6 +34,7 @@ type LiveStage struct {
 	FailedBuildCollector *collector.FailedBuildCollector
 }
 
+// NewLiveStage parses the source repository and wires clients for the live workflow stages.
 func NewLiveStage(request config.Request, clients *cluster.ClientSet, provider providers.Provider) (*LiveStage, error) {
 	source, err := providers.ParseRepository(request.SourceRepository)
 	if err != nil {
@@ -55,6 +56,7 @@ func NewLiveStage(request config.Request, clients *cluster.ClientSet, provider p
 	return stage, nil
 }
 
+// Preflight validates the cluster, required APIs, platform scheduling, and tenant namespace.
 func (s *LiveStage) Preflight(ctx context.Context, manifest *model.RunManifest) error {
 	spec := cluster.PreflightSpec{ExpectedServer: s.Request.ClusterServer, AccessChecks: []cluster.AccessCheck{
 		{Name: "pipelineruns", Resource: PipelineRunGVR, Namespace: s.Request.TenantNamespace},
@@ -78,6 +80,7 @@ func (s *LiveStage) Preflight(ctx context.Context, manifest *model.RunManifest) 
 	return nil
 }
 
+// EnsureFixture validates the provider fixture and records its tenant resources in the manifest.
 func (s *LiveStage) EnsureFixture(ctx context.Context, manifest *model.RunManifest) error {
 	fixture := s.Fixture
 	if recorded := fixtureFromManifest(manifest.Fixture); recorded.Name != "" {
@@ -125,6 +128,7 @@ func (s *LiveStage) EnsureFixture(ctx context.Context, manifest *model.RunManife
 	return nil
 }
 
+// ensureTenantNamespaceAvailable approves and removes stale owned namespaces before the run proceeds.
 func (s *LiveStage) ensureTenantNamespaceAvailable(ctx context.Context, manifest *model.RunManifest) error {
 	namespace := manifest.Fixture.TenantNamespace
 	if namespace == "" {
@@ -158,6 +162,7 @@ func (s *LiveStage) ensureTenantNamespaceAvailable(ctx context.Context, manifest
 	return nil
 }
 
+// TriggerComponents waits for PaC onboarding, updates fixture files, and records trigger commits.
 func (s *LiveStage) TriggerComponents(ctx context.Context, manifest *model.RunManifest) error {
 	if s.Fixture.Name == "" {
 		s.Fixture = fixtureFromManifest(manifest.Fixture)
@@ -204,6 +209,7 @@ func (s *LiveStage) TriggerComponents(ctx context.Context, manifest *model.RunMa
 	return nil
 }
 
+// fixtureFromManifest reconstructs a provider repository from saved fixture identity.
 func fixtureFromManifest(identity model.FixtureIdentity) providers.FixtureRepository {
 	return providers.FixtureRepository{
 		Owner: identity.RepositoryOwner,
@@ -212,6 +218,7 @@ func fixtureFromManifest(identity model.FixtureIdentity) providers.FixtureReposi
 	}
 }
 
+// VerifyBuilds waits for successful Buildah TaskRuns and records their PipelineRun identities.
 func (s *LiveStage) VerifyBuilds(ctx context.Context, manifest *model.RunManifest) error {
 	namespace := manifest.Fixture.TenantNamespace
 	if namespace == "" {
@@ -251,6 +258,7 @@ func (s *LiveStage) VerifyBuilds(ctx context.Context, manifest *model.RunManifes
 	return nil
 }
 
+// paCStatusError returns an error when a component's PaC status reports onboarding failure.
 func paCStatusError(object *unstructured.Unstructured) error {
 	if object == nil {
 		return nil
@@ -275,6 +283,7 @@ func paCStatusError(object *unstructured.Unstructured) error {
 	return fmt.Errorf("component %s PaC onboarding failed: %s", object.GetName(), status.PaC.ErrorMessage)
 }
 
+// waitForPaCEnabled polls components until each named component reports enabled PaC status.
 func waitForPaCEnabled(ctx context.Context, timeout, interval time.Duration, names []string, list func(context.Context) ([]unstructured.Unstructured, error)) error {
 	if timeout <= 0 {
 		return fmt.Errorf("PaC timeout must be positive")
@@ -323,6 +332,7 @@ func waitForPaCEnabled(ctx context.Context, timeout, interval time.Duration, nam
 	}
 }
 
+// componentSpec derives the build context and Dockerfile path for a component.
 func componentSpec(name, repository, branch, componentPath string) cluster.ComponentSpec {
 	return cluster.ComponentSpec{
 		Name:       name,
@@ -333,6 +343,7 @@ func componentSpec(name, repository, branch, componentPath string) cluster.Compo
 	}
 }
 
+// waitForBuildMatches polls PipelineRuns until each trigger has a successful matching run or times out.
 func waitForBuildMatches(ctx context.Context, triggerTimeout, buildTimeout, interval time.Duration, namespace string, commits []model.TriggerCommit, list func(context.Context) ([]unstructured.Unstructured, error)) ([]model.PipelineRunIdentity, error) {
 	if triggerTimeout <= 0 {
 		return nil, fmt.Errorf("trigger timeout must be positive")
@@ -393,6 +404,7 @@ func waitForBuildMatches(ctx context.Context, triggerTimeout, buildTimeout, inte
 	}
 }
 
+// waitForBuildTaskRuns polls for matching PipelineRuns and successful Buildah TaskRuns.
 func waitForBuildTaskRuns(ctx context.Context, triggerTimeout, buildTimeout, interval time.Duration, namespace string, commits []model.TriggerCommit, list func(context.Context) ([]unstructured.Unstructured, []unstructured.Unstructured, error)) ([]model.PipelineRunIdentity, error) {
 	if triggerTimeout <= 0 {
 		return nil, fmt.Errorf("trigger timeout must be positive")
@@ -453,6 +465,7 @@ func waitForBuildTaskRuns(ctx context.Context, triggerTimeout, buildTimeout, int
 	}
 }
 
+// matchBuildTaskRuns matches each commit to one PipelineRun and its successful Buildah TaskRuns.
 func matchBuildTaskRuns(pipelineRuns, taskRuns []unstructured.Unstructured, commits []model.TriggerCommit) ([]model.PipelineRunIdentity, bool, error) {
 	identities := make([]model.PipelineRunIdentity, 0, len(commits))
 	for _, commit := range commits {
@@ -484,6 +497,7 @@ func matchBuildTaskRuns(pipelineRuns, taskRuns []unstructured.Unstructured, comm
 	return identities, false, nil
 }
 
+// buildTaskRunsForPipelineRun selects Buildah TaskRuns owned by or labeled for a PipelineRun.
 func buildTaskRunsForPipelineRun(taskRuns []unstructured.Unstructured, pipelineRun *unstructured.Unstructured) []*unstructured.Unstructured {
 	result := make([]*unstructured.Unstructured, 0)
 	for index := range taskRuns {
@@ -500,10 +514,12 @@ func buildTaskRunsForPipelineRun(taskRuns []unstructured.Unstructured, pipelineR
 	return result
 }
 
+// matchBuildsObjects matches commits against a supplied PipelineRun list.
 func matchBuildsObjects(objects []unstructured.Unstructured, commits []model.TriggerCommit) ([]model.PipelineRunIdentity, bool, error) {
 	return matchBuildsWithObjects(objects, commits)
 }
 
+// matchBuilds lists PipelineRuns and matches them to trigger commits.
 func matchBuilds(ctx context.Context, commits []model.TriggerCommit, list func(context.Context) ([]unstructured.Unstructured, error)) ([]model.PipelineRunIdentity, bool, error) {
 	objects, err := list(ctx)
 	if err != nil {
@@ -512,6 +528,7 @@ func matchBuilds(ctx context.Context, commits []model.TriggerCommit, list func(c
 	return matchBuildsWithObjects(objects, commits)
 }
 
+// matchBuildsWithObjects evaluates exact or post-trigger PipelineRun matches for each commit.
 func matchBuildsWithObjects(objects []unstructured.Unstructured, commits []model.TriggerCommit) ([]model.PipelineRunIdentity, bool, error) {
 	identities := make([]model.PipelineRunIdentity, 0, len(commits))
 	for _, commit := range commits {
@@ -552,6 +569,7 @@ func matchBuildsWithObjects(objects []unstructured.Unstructured, commits []model
 	return identities, false, nil
 }
 
+// matchingPipelineRuns selects exact-SHA runs or eligible post-trigger runs for a component.
 func matchingPipelineRuns(objects []unstructured.Unstructured, commit model.TriggerCommit) []*unstructured.Unstructured {
 	exact := make([]*unstructured.Unstructured, 0)
 	fallback := make([]*unstructured.Unstructured, 0)
@@ -573,6 +591,7 @@ func matchingPipelineRuns(objects []unstructured.Unstructured, commit model.Trig
 	return fallback
 }
 
+// hasExactSHA reports whether any PipelineRun carries the requested source SHA.
 func hasExactSHA(objects []*unstructured.Unstructured, sha string) bool {
 	for _, object := range objects {
 		if pipelineRunSHA(object) == sha {
@@ -582,14 +601,17 @@ func hasExactSHA(objects []*unstructured.Unstructured, sha string) bool {
 	return false
 }
 
+// pipelineRunSHA returns the PipelineRun source SHA label.
 func pipelineRunSHA(object *unstructured.Unstructured) string {
 	return object.GetLabels()["pipelinesascode.tekton.dev/sha"]
 }
 
+// afterTrigger reports whether a PipelineRun was created after its trigger commit.
 func afterTrigger(object *unstructured.Unstructured, commit model.TriggerCommit) bool {
 	return commit.CreatedAt.IsZero() || object.GetCreationTimestamp().Time.After(commit.CreatedAt)
 }
 
+// allBuildsAppeared reports whether each trigger has at least one matching PipelineRun.
 func allBuildsAppeared(objects []unstructured.Unstructured, commits []model.TriggerCommit) bool {
 	for _, commit := range commits {
 		if len(matchingPipelineRuns(objects, commit)) == 0 {
@@ -599,6 +621,7 @@ func allBuildsAppeared(objects []unstructured.Unstructured, commits []model.Trig
 	return true
 }
 
+// noPipelineRunError describes the first trigger with no matching PipelineRun and observed runs.
 func noPipelineRunError(namespace string, commits []model.TriggerCommit, objects []unstructured.Unstructured) error {
 	for _, commit := range commits {
 		if len(matchingPipelineRuns(objects, commit)) == 0 {
@@ -614,6 +637,7 @@ func noPipelineRunError(namespace string, commits []model.TriggerCommit, objects
 	return fmt.Errorf("no expected PipelineRuns in namespace %s after trigger; observed %d PipelineRuns", namespace, len(objects))
 }
 
+// pipelineRunConditionStatus returns the Succeeded condition status or Unknown when absent.
 func pipelineRunConditionStatus(object *unstructured.Unstructured) string {
 	conditions, _, _ := unstructured.NestedSlice(object.Object, "status", "conditions")
 	for _, item := range conditions {
@@ -627,6 +651,7 @@ func pipelineRunConditionStatus(object *unstructured.Unstructured) string {
 	return "Unknown"
 }
 
+// countBaselinePRs counts PipelineRuns and those with a successful Succeeded condition.
 func countBaselinePRs(objects []unstructured.Unstructured) (succeeded, total int) {
 	total = len(objects)
 	for index := range objects {
@@ -637,6 +662,7 @@ func countBaselinePRs(objects []unstructured.Unstructured) (succeeded, total int
 	return succeeded, total
 }
 
+// allNewPipelineRunsTerminal reports whether enough new runs are terminal without enough successes.
 func allNewPipelineRunsTerminal(objects []unstructured.Unstructured, baselineSucceeded, baselineTotal, baselineTerminal, expected int) bool {
 	if expected == 0 || len(objects)-baselineTotal < expected {
 		return false
@@ -646,6 +672,7 @@ func allNewPipelineRunsTerminal(objects []unstructured.Unstructured, baselineSuc
 	return newTerminal >= expected && succeeded-baselineSucceeded < expected && total-baselineTotal >= expected
 }
 
+// countTerminalPRs counts PipelineRuns whose Succeeded conditions are True or False.
 func countTerminalPRs(objects []unstructured.Unstructured) int {
 	terminal := 0
 	for index := range objects {
@@ -662,10 +689,12 @@ type PipelineRunFailedError struct {
 	Component string
 }
 
+// Error formats the failed PipelineRun's namespace and name.
 func (e *PipelineRunFailedError) Error() string {
 	return fmt.Sprintf("PipelineRun %s/%s failed", e.Namespace, e.Name)
 }
 
+// VerifyBuildOutputs checks recorded PipelineRuns and appends their output evidence to the manifest.
 func (s *LiveStage) VerifyBuildOutputs(ctx context.Context, manifest *model.RunManifest) error {
 	evidence, err := (cluster.BuildOutputInspector{Dynamic: s.Clients.Dynamic}).Verify(ctx, manifest.PipelineRuns)
 	if err != nil {
@@ -675,6 +704,7 @@ func (s *LiveStage) VerifyBuildOutputs(ctx context.Context, manifest *model.RunM
 	return nil
 }
 
+// identityFromObject builds a PipelineRun identity from metadata and its Succeeded condition.
 func identityFromObject(object *unstructured.Unstructured, component, sourceSHA string) model.PipelineRunIdentity {
 	identity := model.PipelineRunIdentity{Namespace: object.GetNamespace(), Name: object.GetName(), UID: object.GetUID(), Component: component, SourceSHA: sourceSHA, StartedAt: object.GetCreationTimestamp().Time}
 	conditions, _, _ := unstructured.NestedSlice(object.Object, "status", "conditions")

@@ -7,6 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+// TestSetup runs the Ginkgo suite for the setup package.
 func TestSetup(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "Setup Suite")

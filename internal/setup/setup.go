@@ -67,6 +67,7 @@ func Prepare(args []string) ([]string, error) {
 	return prepared, nil
 }
 
+// needsSetup reports whether command requires local cluster setup.
 func needsSetup(command string) bool {
 	switch command {
 	case "run", "cleanup":
@@ -76,6 +77,7 @@ func needsSetup(command string) bool {
 	}
 }
 
+// envFileArg returns the --env-file value or the default environment file path.
 func envFileArg(args []string) string {
 	for index, arg := range args {
 		if arg == "--env-file" && index+1 < len(args) {
@@ -88,6 +90,7 @@ func envFileArg(args []string) string {
 	return defaultEnvFile
 }
 
+// flagValue finds name in separate-value or equals-value form.
 func flagValue(args []string, name string) (string, bool) {
 	for index, arg := range args {
 		if arg == name && index+1 < len(args) {
@@ -100,6 +103,7 @@ func flagValue(args []string, name string) (string, bool) {
 	return "", false
 }
 
+// findScript returns the first existing local setup script from configured and conventional paths.
 func findScript() (string, error) {
 	candidates := []string{}
 	if configured := strings.TrimSpace(os.Getenv("KONFLUX_TEST_SETUP_SCRIPT")); configured != "" {
@@ -119,6 +123,7 @@ func findScript() (string, error) {
 	return "", fmt.Errorf("local setup script not found; expected scripts/run-local.sh")
 }
 
+// parseOutput reads recognized key-value settings emitted by the local setup script.
 func parseOutput(output []byte) (map[string]string, error) {
 	values := make(map[string]string)
 	scanner := bufio.NewScanner(strings.NewReader(string(output)))

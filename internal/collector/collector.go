@@ -54,10 +54,12 @@ type Collector struct {
 	Now      func() time.Time
 }
 
+// RequiredArtifactNames returns a copy of the baseline failure-artifact paths.
 func RequiredArtifactNames() []string {
 	return append([]string(nil), requiredArtifactNames...)
 }
 
+// RequiredArtifactNamesForManifest adds failed-build logs when the manifest records them.
 func RequiredArtifactNamesForManifest(manifest model.RunManifest) []string {
 	names := RequiredArtifactNames()
 	if len(manifest.FailedBuildLogs) > 0 {
@@ -66,6 +68,7 @@ func RequiredArtifactNamesForManifest(manifest model.RunManifest) []string {
 	return names
 }
 
+// Collect writes the run manifest, source artifacts, and a report of collection attempts.
 func (c Collector) Collect(ctx context.Context, runID string, manifest model.RunManifest, sources []Source) (Report, error) {
 	if c.StateDir == "" || runID == "" {
 		return Report{}, fmt.Errorf("state directory and run ID are required")
@@ -109,6 +112,7 @@ func (c Collector) Collect(ctx context.Context, runID string, manifest model.Run
 	return report, nil
 }
 
+// CollectAndVerify collects artifacts and verifies the saved files against the run manifest.
 func (c Collector) CollectAndVerify(ctx context.Context, runID string, manifest model.RunManifest, sources []Source) (model.FailureArtifactReport, error) {
 	artifactReport := c.emptyArtifactReport(runID, manifest)
 	_, err := c.Collect(ctx, runID, manifest, sources)
@@ -215,6 +219,7 @@ func (c Collector) VerifySavedArtifacts(runID string, manifest model.RunManifest
 	return artifactReport, nil
 }
 
+// verifyTaskRunSnapshots checks every saved TaskRun list entry against its YAML snapshot.
 func verifyTaskRunSnapshots(root, namespace string) error {
 	data, err := readRegularFileWithinRoot(root, filepath.Join("workload", "taskruns.json"))
 	if err != nil {
@@ -270,6 +275,7 @@ func verifyTaskRunSnapshots(root, namespace string) error {
 	return nil
 }
 
+// verifyFailedBuildLogs confirms each recorded log path resolves to a regular file under failed-builds.
 func verifyFailedBuildLogs(root string, logs []model.FailedBuildLog) error {
 	for _, log := range logs {
 		if strings.TrimSpace(log.LogPath) == "" {
@@ -289,6 +295,7 @@ func verifyFailedBuildLogs(root string, logs []model.FailedBuildLog) error {
 	return nil
 }
 
+// artifactRelativePath resolves path to a relative path contained by the run artifact root.
 func artifactRelativePath(root, path string) (string, error) {
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {
@@ -323,6 +330,7 @@ func artifactRelativePath(root, path string) (string, error) {
 	return "", fmt.Errorf("path does not resolve inside the run artifact directory")
 }
 
+// readRegularFileWithinRoot reads a regular file after rejecting traversal and symlink paths.
 func readRegularFileWithinRoot(root, relativePath string) ([]byte, error) {
 	cleanPath := filepath.Clean(relativePath)
 	if cleanPath == "." || filepath.IsAbs(cleanPath) || cleanPath == ".." || strings.HasPrefix(cleanPath, ".."+string(filepath.Separator)) {
@@ -350,10 +358,12 @@ func readRegularFileWithinRoot(root, relativePath string) ([]byte, error) {
 	return os.ReadFile(current)
 }
 
+// emptyArtifactReport initializes a verification report with its path and required artifact names.
 func (c Collector) emptyArtifactReport(runID string, manifest model.RunManifest) model.FailureArtifactReport {
 	return model.FailureArtifactReport{ArtifactPath: c.runRoot(runID, manifest), RequiredArtifactNames: RequiredArtifactNamesForManifest(manifest)}
 }
 
+// validateArtifactDirectory requires a single non-empty relative directory name.
 func validateArtifactDirectory(directory string) error {
 	if strings.TrimSpace(directory) == "" || directory == "." || directory == ".." || filepath.IsAbs(directory) || filepath.Base(directory) != directory || strings.ContainsAny(directory, `/\\`) {
 		return fmt.Errorf("artifact directory must be a single directory name")
@@ -361,6 +371,7 @@ func validateArtifactDirectory(directory string) error {
 	return nil
 }
 
+// readRegularFile reads a regular file and rejects symbolic links.
 func readRegularFile(path string) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -375,6 +386,7 @@ func readRegularFile(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+// runRoot returns the artifact directory selected by the manifest or run ID.
 func (c Collector) runRoot(runID string, manifest model.RunManifest) string {
 	directory := manifest.ArtifactDirectory
 	if directory == "" {
@@ -383,6 +395,7 @@ func (c Collector) runRoot(runID string, manifest model.RunManifest) string {
 	return filepath.Join(c.StateDir, directory)
 }
 
+// successfulAttempt reports whether the collection report records path as successful.
 func successfulAttempt(report Report, path string) bool {
 	for _, attempt := range report.Attempts {
 		if attempt.Path == path && attempt.Status == "success" {
@@ -392,6 +405,7 @@ func successfulAttempt(report Report, path string) bool {
 	return false
 }
 
+// writeJSON writes redacted JSON and creates its parent directory.
 func writeJSON(path string, value any) error {
 	data, err := evidence.RedactedJSON(value)
 	if err != nil {
@@ -404,6 +418,7 @@ func writeJSON(path string, value any) error {
 	return os.WriteFile(path, data, 0o640)
 }
 
+// ReadReport reads and decodes a collection report from path.
 func ReadReport(path string) (Report, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
